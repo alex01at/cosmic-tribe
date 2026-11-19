@@ -12,5 +12,10 @@ return [
     'app' => [
         'env' => 'local',
         'token_secret' => 'local-dev-secret',
+        // Skaliert Bauzeiten/Produktions-Ticks/Flugzeiten (höher = schneller). Mit den aktuellen
+        // Platzhalter-Zahlen dauern Level/Flüge sonst Stunden - für echtes Playtesting lokal
+        // hochdrehen (siehe "langweilig"-Feedback zu Vector Trek, derselbe Fehler wie dort: nie
+        // selbst gespielt). In einer späteren Produktiv-Config auf 1 setzen.
+        'game_speed' => 20,
     ],
 ];

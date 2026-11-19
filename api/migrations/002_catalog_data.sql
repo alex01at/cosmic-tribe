@@ -13,8 +13,9 @@ INSERT INTO building_types (id, name, description, effect) VALUES
     (7, 'Hangar', 'Lagerkapazität für gebaute, noch nicht losgeschickte Schiffe.', 'hangar');
 
 -- Kommandobrücke: effect_amount unbenutzt (0) - nur ihr LEVEL zählt als Deckel für die anderen
--- Module, analog zum Hauptgebäude-Muster aus dem Vorgängerprojekt. Level 1 ist automatisch
--- vorhanden (siehe seed.php), daher cost=0/build_seconds=0 für Level 1 bei JEDEM Gebäudetyp.
+-- Module, analog zum Hauptgebäude-Muster aus dem Vorgängerprojekt. NUR die Kommandobrücke selbst
+-- hat bei Level 1 cost=0/build_seconds=0 (automatisch vorhanden, siehe seed.php) - alle ANDEREN
+-- Gebäudetypen kosten auch auf Level 1 regulär etwas, sie müssen aktiv gebaut werden.
 INSERT INTO building_levels (building_type_id, level, cost_titan, cost_deuterium, cost_credits, build_seconds, effect_amount) VALUES
     (1, 1,     0,    0,   0,     0, 0),
     (1, 2,   800,  400, 200,   900, 0),
