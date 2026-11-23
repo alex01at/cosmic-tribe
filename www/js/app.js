@@ -312,15 +312,19 @@ const App = (() => {
 
         $('shipyard-list').innerHTML = shipyardLevel < 1
             ? '<p class="row-sub">Werft muss zuerst gebaut werden (siehe Basis-Tab).</p>'
-            : state.catalog.shipTypes.filter(s => !s.isFlagship).map(s => `
+            : state.catalog.shipTypes.filter(s => !s.isFlagship).map(s => {
+                const locked = shipyardLevel < s.minShipyardLevel;
+                return `
                 <div class="ship-row">
                     <div class="row-main">
                         <div class="row-title">${s.name}</div>
                         <div class="row-sub">${s.description}</div>
                         <div class="cost-line">${Format.number(s.costTitan)} Titan · ${Format.number(s.costDeuterium)} Deut.${s.costCredits ? ' · ' + Format.number(s.costCredits) + ' Cr.' : ''} · ${Format.duration(s.buildSeconds)}/Stk.</div>
+                        ${locked ? `<div class="cost-line insufficient">Benötigt Werft-Level ${s.minShipyardLevel}</div>` : ''}
                     </div>
-                    <button class="btn primary" data-build-ship="${s.id}">+1</button>
-                </div>`).join('');
+                    <button class="btn ${locked ? '' : 'primary'}" data-build-ship="${s.id}" ${locked ? 'disabled' : ''}>+1</button>
+                </div>`;
+            }).join('');
 
         document.querySelectorAll('[data-build-ship]').forEach(btn => {
             btn.addEventListener('click', () => queueShip(parseInt(btn.dataset.buildShip, 10)));

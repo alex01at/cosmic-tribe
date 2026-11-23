@@ -158,6 +158,11 @@ check(
     'Alle 3 Scouts sind fertig, nicht nur einer - virtuelle Zeitverkettung verarbeitet die ganze Kette offline'
 );
 
+// Werft steht bei p3b auf Level 1 - Kreuzer (Schiffstyp 3) braucht laut Katalog Level 3, muss also
+// trotz bezahlbarer Rohstoffe abgelehnt werden (Phase 4: Werft-Stufen-Freischaltung).
+$cruiserLocked = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3b['baseId'], 'shipTypeId' => 3, 'quantity' => 1], $p3b['token']);
+check($cruiserLocked['status'] === 422, 'Kreuzer ohne ausreichendes Werft-Level wird abgelehnt (422), Status: ' . $cruiserLocked['status']);
+
 // --- Vorbereitung für Flotten-/Kampf-Tests: Testspieler bekommen Schiffe direkt in den Hangar ---
 // (einfacher als jedes Mal eine Werft hochzuziehen und die Bauzeit zu überspringen)
 function giveShips(PDO $pdo, int $baseId, int $shipTypeId, int $quantity): void

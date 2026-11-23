@@ -655,6 +655,10 @@ final class GameEngine
                 $this->rollbackIfOpen();
                 Response::error('Schiffstyp existiert nicht', 404);
             }
+            if ($shipyardLevel < (int) $type['min_shipyard_level']) {
+                $this->rollbackIfOpen();
+                Response::error('Werft-Level zu niedrig für diesen Schiffstyp', 422);
+            }
 
             $totalTitan = (int) $type['cost_titan'] * $quantity;
             $totalDeuterium = (int) $type['cost_deuterium'] * $quantity;
@@ -1207,6 +1211,7 @@ final class GameEngine
                 'costCredits' => (int) $s['cost_credits'],
                 'buildSeconds' => $this->scaledSeconds((int) $s['build_seconds']),
                 'isFlagship' => (bool) $s['is_flagship'],
+                'minShipyardLevel' => (int) $s['min_shipyard_level'],
             ], $shipTypes),
         ];
     }
