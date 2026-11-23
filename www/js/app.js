@@ -491,6 +491,107 @@ const App = (() => {
     }
 
     // ============================================================
+    // Allianz
+    // ============================================================
+    async function renderAlliance() {
+        const el = $('alliance-content');
+        el.innerHTML = '<p class="row-sub">Lädt…</p>';
+
+        const alliance = state.alliance;
+        if (alliance) {
+            const isLeader = alliance.leaderPlayerId === state.player.id;
+            el.innerHTML = `
+                <div class="row-main" style="margin-bottom:10px;">
+                    <div class="row-title">[${alliance.tag}] ${alliance.name}</div>
+                    <div class="row-sub">${alliance.members.length} / ${alliance.memberCap} Mitglieder</div>
+                </div>
+                <div id="alliance-members">
+                    ${alliance.members.map(m => `
+                        <div class="queue-row">
+                            <div class="row-main"><div class="row-title">${m.username}${m.isLeader ? ' (Anführer)' : ''}</div></div>
+                            ${isLeader && !m.isLeader ? `<button class="btn danger" data-kick="${m.playerId}">Entfernen</button>` : ''}
+                        </div>`).join('')}
+                </div>
+                <button class="btn danger" id="alliance-leave-btn" style="width:100%; margin-top:10px;">Allianz verlassen</button>
+            `;
+            document.querySelectorAll('[data-kick]').forEach(btn => {
+                btn.addEventListener('click', () => kickAllianceMember(parseInt(btn.dataset.kick, 10)));
+            });
+            $('alliance-leave-btn').addEventListener('click', leaveAlliance);
+            return;
+        }
+
+        try {
+            const list = await Api.get('/alliances');
+            el.innerHTML = `
+                <div class="panel" style="margin-bottom:10px;">
+                    <div class="row-title" style="margin-bottom:6px;">Neue Allianz gründen</div>
+                    <input type="text" id="alliance-name" placeholder="Name" maxlength="40" style="width:100%; margin-bottom:6px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;">
+                    <input type="text" id="alliance-tag" placeholder="Tag (2-8 Zeichen)" maxlength="8" style="width:100%; margin-bottom:6px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;">
+                    <button class="btn primary" id="alliance-create-btn" style="width:100%;">Gründen</button>
+                </div>
+                <div class="row-title" style="margin-bottom:6px;">Bestehende Allianzen</div>
+                ${list.alliances.length === 0 ? '<p class="row-sub">Noch keine Allianz gegründet.</p>' : list.alliances.map(a => `
+                    <div class="queue-row">
+                        <div class="row-main">
+                            <div class="row-title">[${a.tag}] ${a.name}</div>
+                            <div class="row-sub">Anführer: ${a.leaderName} · ${a.memberCount} / ${a.memberCap} Mitglieder</div>
+                        </div>
+                        <button class="btn primary" data-join="${a.id}" ${a.memberCount >= a.memberCap ? 'disabled' : ''}>Beitreten</button>
+                    </div>`).join('')}
+            `;
+            $('alliance-create-btn').addEventListener('click', createAlliance);
+            document.querySelectorAll('[data-join]').forEach(btn => {
+                btn.addEventListener('click', () => joinAlliance(parseInt(btn.dataset.join, 10)));
+            });
+        } catch (e) {
+            el.innerHTML = '<p class="row-sub">Allianzliste konnte nicht geladen werden.</p>';
+        }
+    }
+
+    async function createAlliance() {
+        const name = $('alliance-name').value.trim();
+        const tag = $('alliance-tag').value.trim();
+        try {
+            await Api.post('/alliance/create', { name, tag });
+            await refreshState();
+            renderAlliance();
+        } catch (e) {
+            errorToast(e, 'Allianz konnte nicht gegründet werden');
+        }
+    }
+
+    async function joinAlliance(allianceId) {
+        try {
+            await Api.post('/alliance/join', { allianceId });
+            await refreshState();
+            renderAlliance();
+        } catch (e) {
+            errorToast(e, 'Beitritt fehlgeschlagen');
+        }
+    }
+
+    async function leaveAlliance() {
+        try {
+            await Api.post('/alliance/leave', {});
+            await refreshState();
+            renderAlliance();
+        } catch (e) {
+            errorToast(e, 'Verlassen fehlgeschlagen');
+        }
+    }
+
+    async function kickAllianceMember(playerId) {
+        try {
+            await Api.post('/alliance/kick', { playerId });
+            await refreshState();
+            renderAlliance();
+        } catch (e) {
+            errorToast(e, 'Entfernen fehlgeschlagen');
+        }
+    }
+
+    // ============================================================
     // Navigation
     // ============================================================
     function initNav() {
@@ -511,6 +612,9 @@ const App = (() => {
                 const base = currentBase();
                 if (base) MapView.centerOn(base.sectorX, base.sectorY);
             }
+        }
+        if (view === 'alliance') {
+            renderAlliance();
         }
     }
 
@@ -548,7 +652,7 @@ const App = (() => {
     }
 
     function slotLabel(slot) {
-        if (slot.type === 'base') return `${slot.name} (${slot.owner})${slot.protected ? ' · geschützt' : ''}`;
+        if (slot.type === 'base') return `${slot.name} (${slot.allianceTag ? '[' + slot.allianceTag + '] ' : ''}${slot.owner})${slot.protected ? ' · geschützt' : ''}`;
         if (slot.type === 'npc_outpost') return `NPC-Außenposten: ${slot.name}`;
         if (slot.type === 'asteroid_field') return `Asteroidenfeld (+${slot.bonusPercent}%)`;
         if (slot.type === 'nebula') return 'Nebel';

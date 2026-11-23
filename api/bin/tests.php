@@ -412,6 +412,72 @@ $reportCountStmt = $pdo->prepare('SELECT COUNT(*) FROM combat_reports WHERE atta
 $reportCountStmt->execute([$p15['playerId']]);
 check((int) $reportCountStmt->fetchColumn() === 1, 'Genau EIN Kampfbericht entsteht, nicht zwei (keine doppelte Auflösung)');
 
+// --- Test 16: Allianzen - gründen, beitreten, Mitglieder schützen sich gegenseitig, Kapazität ---
+echo "Test: Allianz gründen/beitreten schützt Mitglieder vor gegenseitigem Angriff, member_cap wird nicht überschritten (mehrere Worker nötig!)\n";
+$a1 = registerPlayer($pdo, $createdDeviceIds, 'test-ally-leader');
+$allianceTag = 'T' . random_int(1000, 9999);
+$createAlliance = apiCall('POST', '/api/alliance/create', ['name' => 'Testallianz ' . $allianceTag, 'tag' => $allianceTag], $a1['token']);
+check($createAlliance['status'] === 200, 'Allianz wird gegründet, Status: ' . $createAlliance['status']);
+$allianceId = $createAlliance['body']['id'];
+
+$a2 = registerPlayer($pdo, $createdDeviceIds, 'test-ally-member');
+$joinResult = apiCall('POST', '/api/alliance/join', ['allianceId' => $allianceId], $a2['token']);
+check($joinResult['status'] === 200 && count($joinResult['body']['members']) === 2, 'Zweiter Spieler tritt bei, Allianz hat 2 Mitglieder');
+
+giveShips($pdo, $a2['baseId'], 2, 5); // 5 Abfangjäger für a2
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$a2['baseId']]);
+$allyAttack = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $a2['baseId'], 'ships' => [2 => 2],
+    'targetSectorId' => $a1['sectorId'], 'targetPosition' => $a1['position'],
+    'mission' => 'attack', 'energyPreset' => 'weapons',
+], $a2['token']);
+check($allyAttack['status'] === 422, 'Angriff auf ein Allianzmitglied wird abgelehnt (422), Status: ' . $allyAttack['status']);
+
+$a3 = registerPlayer($pdo, $createdDeviceIds, 'test-ally-outsider');
+$outsiderAttackAttempt = apiCall('POST', '/api/alliance/join', ['allianceId' => $allianceId], $a1['token']);
+check($outsiderAttackAttempt['status'] === 422, 'Bereits-Mitglied kann keiner (weiteren) Allianz beitreten (422)');
+
+$kickResult = apiCall('POST', '/api/alliance/kick', ['playerId' => $a2['playerId']], $a1['token']);
+check($kickResult['status'] === 200 && count($kickResult['body']['members']) === 1, 'Anführer kann Mitglied entfernen, Allianz hat danach 1 Mitglied');
+$kickByMember = apiCall('POST', '/api/alliance/kick', ['playerId' => $a1['playerId']], $a3['token']);
+check($kickByMember['status'] === 403, 'Nicht-Anführer kann niemanden entfernen (403)');
+
+// member_cap race: Allianz auf Kapazität 2 setzen, dann 6 Spieler parallel beitreten lassen -
+// dieselbe Lektion wie beim Hangar-Bestand: FOR UPDATE auf der Allianz-Zeile MUSS die Kapazität
+// tatsächlich durchsetzen, nicht nur das letzte Ergebnis eines nicht-atomaren Zählers sein.
+$pdo->prepare('UPDATE alliances SET member_cap = 2 WHERE id = ?')->execute([$allianceId]);
+$capCandidates = [];
+for ($i = 0; $i < 6; $i++) {
+    $capCandidates[] = registerPlayer($pdo, $createdDeviceIds, 'test-ally-cap' . $i);
+}
+$multiHandle3 = curl_multi_init();
+$capHandles = [];
+foreach ($capCandidates as $cand) {
+    $ch = curl_init(BASE_URL . '/api/alliance/join');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Authorization: Bearer ' . $cand['token']]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(['allianceId' => $allianceId]));
+    curl_multi_add_handle($multiHandle3, $ch);
+    $capHandles[] = $ch;
+}
+do {
+    curl_multi_exec($multiHandle3, $running3);
+} while ($running3);
+$capSuccesses = 0;
+foreach ($capHandles as $ch) {
+    $res = json_decode(curl_multi_getcontent($ch), true);
+    if (($res['id'] ?? null) === $allianceId) {
+        $capSuccesses++;
+    }
+    curl_multi_remove_handle($multiHandle3, $ch);
+}
+curl_multi_close($multiHandle3);
+$finalMemberCountStmt = $pdo->prepare('SELECT COUNT(*) FROM alliance_members WHERE alliance_id = ?');
+$finalMemberCountStmt->execute([$allianceId]);
+check((int) $finalMemberCountStmt->fetchColumn() === 2, 'Allianz hat trotz 6 paralleler Beitritte genau member_cap=2 Mitglieder (1 Anführer + 1 neues)');
+check($capSuccesses === 1, 'Von 6 parallelen Beitritten gelingt genau 1 (die Kapazität lässt noch 1 Platz zu), sind ' . $capSuccesses);
+
 // --- Aufräumen ---
 echo "\nRäume Testdaten auf...\n";
 $placeholders = implode(',', array_fill(0, count($createdDeviceIds), '?'));
@@ -437,6 +503,9 @@ if ($playerIds !== []) {
     }
     $pdo->prepare("DELETE FROM combat_reports WHERE attacker_player_id IN ($idPh) OR defender_player_id IN ($idPh)")
         ->execute(array_merge($playerIds, $playerIds));
+
+    $pdo->prepare("DELETE FROM alliance_members WHERE player_id IN ($idPh)")->execute($playerIds);
+    $pdo->prepare("DELETE FROM alliances WHERE leader_player_id IN ($idPh)")->execute($playerIds);
 
     if ($basePh !== null) {
         $pdo->prepare("DELETE FROM base_build_queue WHERE base_id IN ($basePh)")->execute($allBaseIds);

@@ -98,5 +98,39 @@ $router->post('/api/fleet/dispatch', function (array $body) use ($pdo, $gameSpee
     ));
 });
 
+$router->get('/api/alliances', function () use ($pdo, $gameSpeed) {
+    Auth::requirePlayer($pdo);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->listAlliances());
+});
+
+$router->post('/api/alliance/create', function (array $body) use ($pdo, $gameSpeed) {
+    $player = Auth::requirePlayer($pdo);
+    $name = (string) ($body['name'] ?? '');
+    $tag = (string) ($body['tag'] ?? '');
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->createAlliance((int) $player['id'], $name, $tag));
+});
+
+$router->post('/api/alliance/join', function (array $body) use ($pdo, $gameSpeed) {
+    $player = Auth::requirePlayer($pdo);
+    $allianceId = (int) ($body['allianceId'] ?? 0);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->joinAlliance((int) $player['id'], $allianceId));
+});
+
+$router->post('/api/alliance/leave', function () use ($pdo, $gameSpeed) {
+    $player = Auth::requirePlayer($pdo);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->leaveAlliance((int) $player['id']));
+});
+
+$router->post('/api/alliance/kick', function (array $body) use ($pdo, $gameSpeed) {
+    $player = Auth::requirePlayer($pdo);
+    $targetPlayerId = (int) ($body['playerId'] ?? 0);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->kickAllianceMember((int) $player['id'], $targetPlayerId));
+});
+
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $router->dispatch($_SERVER['REQUEST_METHOD'], $path);

@@ -1060,6 +1060,14 @@ final class GameEngine
                     $this->rollbackIfOpen();
                     Response::error('Die eigene Basis kann nicht angegriffen werden', 422);
                 }
+                if ($targetBase !== false) {
+                    $attackerAllianceId = $this->allianceIdOf($playerId);
+                    $defenderAllianceId = $this->allianceIdOf((int) $targetBase['player_id']);
+                    if ($attackerAllianceId !== null && $attackerAllianceId === $defenderAllianceId) {
+                        $this->rollbackIfOpen();
+                        Response::error('Allianzmitglieder können nicht angegriffen werden', 422);
+                    }
+                }
                 if ($targetBase === false && !$hasNpc) {
                     $this->rollbackIfOpen();
                     Response::error('Dort gibt es nichts anzugreifen', 422);
@@ -1187,6 +1195,7 @@ final class GameEngine
             'combatReports' => $reports,
             'gameSpeed' => $this->gameSpeed,
             'catalog' => $this->catalog(),
+            'alliance' => $this->allianceInfo((int) $player['id']),
         ];
     }
 
@@ -1240,8 +1249,10 @@ final class GameEngine
         $placeholders = implode(',', array_fill(0, count($sectorIds), '?'));
 
         $basesStmt = $this->pdo->prepare(
-            "SELECT b.sector_id, b.position, b.name, b.protected_until, p.username
+            "SELECT b.sector_id, b.position, b.name, b.protected_until, p.username, a.tag AS alliance_tag
              FROM bases b JOIN players p ON p.id = b.player_id
+             LEFT JOIN alliance_members am ON am.player_id = b.player_id
+             LEFT JOIN alliances a ON a.id = am.alliance_id
              WHERE b.sector_id IN ($placeholders)"
         );
         $basesStmt->execute($sectorIds);
@@ -1252,6 +1263,7 @@ final class GameEngine
                 'type' => 'base',
                 'name' => $b['name'],
                 'owner' => $b['username'],
+                'allianceTag' => $b['alliance_tag'],
                 'protected' => $b['protected_until'] !== null && new DateTimeImmutable($b['protected_until']) > new DateTimeImmutable(),
             ];
         }
@@ -1454,5 +1466,236 @@ final class GameEngine
         }
 
         return $base;
+    }
+
+    // ============================================================
+    // Allianzen (Phase 4) - MVP bewusst einfach: offen beitretbar, kein Einladungs-/Antrags-
+    // Workflow, Verlassen immer sofort moeglich, Fuehrung geht beim Verlassen automatisch an das
+    // dienstaelteste verbleibende Mitglied. Siehe Migration 006 fuer die Begruendung.
+    // ============================================================
+
+    public function createAlliance(int $playerId, string $name, string $tag): array
+    {
+        $name = trim($name);
+        $tag = trim($tag);
+        if (mb_strlen($name) < 3 || mb_strlen($name) > 40) {
+            Response::error('Name muss 3-40 Zeichen haben', 422);
+        }
+        if (mb_strlen($tag) < 2 || mb_strlen($tag) > 8) {
+            Response::error('Tag muss 2-8 Zeichen haben', 422);
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $memberStmt = $this->pdo->prepare('SELECT 1 FROM alliance_members WHERE player_id = ? FOR UPDATE');
+            $memberStmt->execute([$playerId]);
+            if ($memberStmt->fetch() !== false) {
+                $this->rollbackIfOpen();
+                Response::error('Du bist bereits in einer Allianz', 422);
+            }
+
+            try {
+                $this->pdo->prepare('INSERT INTO alliances (name, tag, leader_player_id) VALUES (?, ?, ?)')
+                    ->execute([$name, $tag, $playerId]);
+            } catch (PDOException $e) {
+                $this->rollbackIfOpen();
+                Response::error('Name oder Tag bereits vergeben', 409);
+            }
+            $allianceId = (int) $this->pdo->lastInsertId();
+
+            $this->pdo->prepare('INSERT INTO alliance_members (alliance_id, player_id) VALUES (?, ?)')
+                ->execute([$allianceId, $playerId]);
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return $this->allianceInfo($playerId);
+    }
+
+    public function joinAlliance(int $playerId, int $allianceId): array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $memberStmt = $this->pdo->prepare('SELECT 1 FROM alliance_members WHERE player_id = ? FOR UPDATE');
+            $memberStmt->execute([$playerId]);
+            if ($memberStmt->fetch() !== false) {
+                $this->rollbackIfOpen();
+                Response::error('Du bist bereits in einer Allianz', 422);
+            }
+
+            // Allianz-Zeile sperren, BEVOR die aktuelle Mitgliederzahl gezaehlt wird - sonst
+            // koennten mehrere parallele Beitritte die member_cap gleichzeitig ueberschreiten
+            // (dieselbe Lektion wie beim Hangar-Bestand in dispatchFleet()).
+            $allianceStmt = $this->pdo->prepare('SELECT * FROM alliances WHERE id = ? FOR UPDATE');
+            $allianceStmt->execute([$allianceId]);
+            $alliance = $allianceStmt->fetch();
+            if ($alliance === false) {
+                $this->rollbackIfOpen();
+                Response::error('Allianz existiert nicht', 404);
+            }
+
+            $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM alliance_members WHERE alliance_id = ?');
+            $countStmt->execute([$allianceId]);
+            if ((int) $countStmt->fetchColumn() >= (int) $alliance['member_cap']) {
+                $this->rollbackIfOpen();
+                Response::error('Allianz ist voll', 422);
+            }
+
+            $this->pdo->prepare('INSERT INTO alliance_members (alliance_id, player_id) VALUES (?, ?)')
+                ->execute([$allianceId, $playerId]);
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return $this->allianceInfo($playerId);
+    }
+
+    public function leaveAlliance(int $playerId): array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $memberStmt = $this->pdo->prepare(
+                'SELECT am.*, a.leader_player_id FROM alliance_members am
+                 JOIN alliances a ON a.id = am.alliance_id WHERE am.player_id = ? FOR UPDATE'
+            );
+            $memberStmt->execute([$playerId]);
+            $membership = $memberStmt->fetch();
+            if ($membership === false) {
+                $this->rollbackIfOpen();
+                Response::error('Du bist in keiner Allianz', 422);
+            }
+            $allianceId = (int) $membership['alliance_id'];
+
+            $this->pdo->prepare('DELETE FROM alliance_members WHERE player_id = ?')->execute([$playerId]);
+
+            if ((int) $membership['leader_player_id'] === $playerId) {
+                // Fuehrung geht automatisch an das dienstaelteste verbleibende Mitglied - gibt es
+                // keines mehr, bleibt die Allianz als leere Huelle bestehen (kein Loeschen hier,
+                // um laufende Diplomatie/Logik nicht zu verkomplizieren; sie ist einfach nicht
+                // mehr beitretbar ueber die UI, solange niemand drin ist... tatsaechlich schon,
+                // offen beitretbar bleibt sie, nur eben leer bis zum ersten neuen Mitglied).
+                $nextLeaderStmt = $this->pdo->prepare(
+                    'SELECT player_id FROM alliance_members WHERE alliance_id = ? ORDER BY joined_at ASC, id ASC LIMIT 1'
+                );
+                $nextLeaderStmt->execute([$allianceId]);
+                $nextLeader = $nextLeaderStmt->fetchColumn();
+                if ($nextLeader !== false) {
+                    $this->pdo->prepare('UPDATE alliances SET leader_player_id = ? WHERE id = ?')
+                        ->execute([(int) $nextLeader, $allianceId]);
+                }
+            }
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return ['left' => true];
+    }
+
+    public function kickAllianceMember(int $playerId, int $targetPlayerId): array
+    {
+        if ($playerId === $targetPlayerId) {
+            Response::error('Verlasse die Allianz stattdessen über leave', 422);
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $leaderStmt = $this->pdo->prepare(
+                'SELECT a.id, a.leader_player_id FROM alliance_members am
+                 JOIN alliances a ON a.id = am.alliance_id WHERE am.player_id = ? FOR UPDATE'
+            );
+            $leaderStmt->execute([$playerId]);
+            $alliance = $leaderStmt->fetch();
+            if ($alliance === false || (int) $alliance['leader_player_id'] !== $playerId) {
+                $this->rollbackIfOpen();
+                Response::error('Nur der Anführer kann Mitglieder entfernen', 403);
+            }
+
+            $targetStmt = $this->pdo->prepare('SELECT 1 FROM alliance_members WHERE player_id = ? AND alliance_id = ?');
+            $targetStmt->execute([$targetPlayerId, $alliance['id']]);
+            if ($targetStmt->fetch() === false) {
+                $this->rollbackIfOpen();
+                Response::error('Spieler ist nicht in dieser Allianz', 404);
+            }
+
+            $this->pdo->prepare('DELETE FROM alliance_members WHERE player_id = ?')->execute([$targetPlayerId]);
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return $this->allianceInfo($playerId);
+    }
+
+    public function listAlliances(): array
+    {
+        $rows = $this->pdo->query(
+            "SELECT a.id, a.name, a.tag, a.member_cap, p.username AS leader_name,
+                    (SELECT COUNT(*) FROM alliance_members WHERE alliance_id = a.id) AS member_count
+             FROM alliances a
+             JOIN players p ON p.id = a.leader_player_id
+             ORDER BY member_count DESC, a.name ASC"
+        )->fetchAll();
+
+        return ['alliances' => array_map(fn ($a) => [
+            'id' => (int) $a['id'],
+            'name' => $a['name'],
+            'tag' => $a['tag'],
+            'leaderName' => $a['leader_name'],
+            'memberCount' => (int) $a['member_count'],
+            'memberCap' => (int) $a['member_cap'],
+        ], $rows)];
+    }
+
+    /** Null, falls der Spieler in keiner Allianz ist - fuer state() und die Rueckgabewerte oben. */
+    private function allianceInfo(int $playerId): ?array
+    {
+        $allianceStmt = $this->pdo->prepare(
+            'SELECT a.* FROM alliance_members am JOIN alliances a ON a.id = am.alliance_id WHERE am.player_id = ?'
+        );
+        $allianceStmt->execute([$playerId]);
+        $alliance = $allianceStmt->fetch();
+        if ($alliance === false) {
+            return null;
+        }
+
+        $membersStmt = $this->pdo->prepare(
+            'SELECT am.player_id, am.joined_at, p.username FROM alliance_members am
+             JOIN players p ON p.id = am.player_id WHERE am.alliance_id = ? ORDER BY am.joined_at ASC'
+        );
+        $membersStmt->execute([$alliance['id']]);
+
+        return [
+            'id' => (int) $alliance['id'],
+            'name' => $alliance['name'],
+            'tag' => $alliance['tag'],
+            'leaderPlayerId' => (int) $alliance['leader_player_id'],
+            'memberCap' => (int) $alliance['member_cap'],
+            'members' => array_map(fn ($m) => [
+                'playerId' => (int) $m['player_id'],
+                'username' => $m['username'],
+                'isLeader' => (int) $m['player_id'] === (int) $alliance['leader_player_id'],
+            ], $membersStmt->fetchAll()),
+        ];
+    }
+
+    /** Null, falls beide Spieler nicht in derselben Allianz sind - fuer assertValidMissionTarget(). */
+    private function allianceIdOf(int $playerId): ?int
+    {
+        $stmt = $this->pdo->prepare('SELECT alliance_id FROM alliance_members WHERE player_id = ?');
+        $stmt->execute([$playerId]);
+        $id = $stmt->fetchColumn();
+
+        return $id === false ? null : (int) $id;
     }
 }
