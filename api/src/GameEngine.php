@@ -1484,6 +1484,13 @@ final class GameEngine
         if (mb_strlen($tag) < 2 || mb_strlen($tag) > 8) {
             Response::error('Tag muss 2-8 Zeichen haben', 422);
         }
+        // Gleiche Zeichensatz-Beschränkung wie bei Spielernamen (Auth::register) - verhindert
+        // HTML/JS in Namen, die ungeprüft in innerHTML landen koennten. Das Frontend escaped
+        // zusätzlich defensiv (Format.escapeHtml), aber die serverseitige Prüfung ist die
+        // eigentliche Absicherung, da sie für ALLE künftigen Clients gilt.
+        if (!preg_match('/^[\p{L}\p{N} _-]+$/u', $name) || !preg_match('/^[\p{L}\p{N}_-]+$/u', $tag)) {
+            Response::error('Name oder Tag enthält ungültige Zeichen', 422);
+        }
 
         $this->pdo->beginTransaction();
         try {
@@ -1575,11 +1582,10 @@ final class GameEngine
             $this->pdo->prepare('DELETE FROM alliance_members WHERE player_id = ?')->execute([$playerId]);
 
             if ((int) $membership['leader_player_id'] === $playerId) {
-                // Fuehrung geht automatisch an das dienstaelteste verbleibende Mitglied - gibt es
-                // keines mehr, bleibt die Allianz als leere Huelle bestehen (kein Loeschen hier,
-                // um laufende Diplomatie/Logik nicht zu verkomplizieren; sie ist einfach nicht
-                // mehr beitretbar ueber die UI, solange niemand drin ist... tatsaechlich schon,
-                // offen beitretbar bleibt sie, nur eben leer bis zum ersten neuen Mitglied).
+                // Fuehrung geht automatisch an das dienstaelteste verbleibende Mitglied. Gibt es
+                // keines mehr, wird die Allianz GELOESCHT - sonst bliebe eine fuehrerlose Huelle
+                // zurueck, deren Name/Tag fuer immer reserviert waere und bei der niemand neues
+                // Mitglied kicken koennte (Advisor-Review-Fund: erste Fassung liess das stehen).
                 $nextLeaderStmt = $this->pdo->prepare(
                     'SELECT player_id FROM alliance_members WHERE alliance_id = ? ORDER BY joined_at ASC, id ASC LIMIT 1'
                 );
@@ -1588,6 +1594,8 @@ final class GameEngine
                 if ($nextLeader !== false) {
                     $this->pdo->prepare('UPDATE alliances SET leader_player_id = ? WHERE id = ?')
                         ->execute([(int) $nextLeader, $allianceId]);
+                } else {
+                    $this->pdo->prepare('DELETE FROM alliances WHERE id = ?')->execute([$allianceId]);
                 }
             }
 

@@ -11,9 +11,15 @@
 
   <div id="login-screen">
     <h1>Starforge</h1>
-    <p>Gib deinen Kommandanten-Namen ein, um deine erste Basis zu gründen.</p>
-    <input id="login-username" type="text" placeholder="Name (3-20 Zeichen)" maxlength="20" autocomplete="off">
-    <button class="btn primary" id="login-submit" style="width:100%;max-width:280px;">Basis gründen</button>
+    <div id="boot-retry" class="hidden">
+      <p>Server nicht erreichbar. Dein Kommando existiert bereits - keine neue Basis gründen, einfach erneut versuchen.</p>
+      <button class="btn primary" id="boot-retry-btn" style="width:100%;max-width:280px;">Erneut versuchen</button>
+    </div>
+    <div id="register-form">
+      <p>Gib deinen Kommandanten-Namen ein, um deine erste Basis zu gründen.</p>
+      <input id="login-username" type="text" placeholder="Name (3-20 Zeichen)" maxlength="20" autocomplete="off">
+      <button class="btn primary" id="login-submit" style="width:100%;max-width:280px;">Basis gründen</button>
+    </div>
     <div id="login-error"></div>
   </div>
 

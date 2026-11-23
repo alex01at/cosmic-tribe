@@ -478,6 +478,33 @@ $finalMemberCountStmt->execute([$allianceId]);
 check((int) $finalMemberCountStmt->fetchColumn() === 2, 'Allianz hat trotz 6 paralleler Beitritte genau member_cap=2 Mitglieder (1 Anführer + 1 neues)');
 check($capSuccesses === 1, 'Von 6 parallelen Beitritten gelingt genau 1 (die Kapazität lässt noch 1 Platz zu), sind ' . $capSuccesses);
 
+// --- Test 17: Allianz-Name/-Tag mit HTML/JS wird abgelehnt (XSS-Fund, Advisor-Review) ---
+echo "Test: Allianz-Name/-Tag mit ungültigen Zeichen (HTML/JS) wird abgelehnt\n";
+$xssAttempt = apiCall('POST', '/api/alliance/create', [
+    'name' => 'Böse<img src=x onerror=alert(1)>', 'tag' => 'XSS',
+], $a3['token']);
+check($xssAttempt['status'] === 422, 'Allianz-Name mit HTML-Zeichen wird abgelehnt (422), Status: ' . $xssAttempt['status']);
+
+// --- Test 18: Verlassen - Anführerwechsel bei >1 Mitglied, Allianz wird gelöscht bei 0 Mitgliedern ---
+echo "Test: Allianz-Anführerwechsel beim Verlassen, Löschung bei letztem Mitglied\n";
+$b1 = registerPlayer($pdo, $createdDeviceIds, 'test-leave-1');
+$leaveAllianceCreate = apiCall('POST', '/api/alliance/create', ['name' => 'Verlasstest', 'tag' => 'VLT'], $b1['token']);
+$leaveAllianceId = $leaveAllianceCreate['body']['id'];
+$b2 = registerPlayer($pdo, $createdDeviceIds, 'test-leave-2');
+apiCall('POST', '/api/alliance/join', ['allianceId' => $leaveAllianceId], $b2['token']);
+
+$leaderLeaves = apiCall('POST', '/api/alliance/leave', [], $b1['token']);
+check($leaderLeaves['status'] === 200, 'Anführer kann die Allianz verlassen, Status: ' . $leaderLeaves['status']);
+$afterLeaderLeftStmt = $pdo->prepare('SELECT leader_player_id FROM alliances WHERE id = ?');
+$afterLeaderLeftStmt->execute([$leaveAllianceId]);
+check((int) $afterLeaderLeftStmt->fetchColumn() === $b2['playerId'], 'Führung geht automatisch an das verbleibende (dienstälteste) Mitglied über');
+
+$lastMemberLeaves = apiCall('POST', '/api/alliance/leave', [], $b2['token']);
+check($lastMemberLeaves['status'] === 200, 'Letztes Mitglied kann ebenfalls verlassen, Status: ' . $lastMemberLeaves['status']);
+$allianceGoneStmt = $pdo->prepare('SELECT COUNT(*) FROM alliances WHERE id = ?');
+$allianceGoneStmt->execute([$leaveAllianceId]);
+check((int) $allianceGoneStmt->fetchColumn() === 0, 'Allianz wird gelöscht, sobald das letzte Mitglied sie verlässt (keine führerlose Hülle)');
+
 // --- Aufräumen ---
 echo "\nRäume Testdaten auf...\n";
 $placeholders = implode(',', array_fill(0, count($createdDeviceIds), '?'));

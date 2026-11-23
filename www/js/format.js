@@ -14,4 +14,11 @@ const Format = {
     outcomeLabel(outcome) {
         return { attacker_win: 'Angreifer siegt', defender_win: 'Verteidiger siegt', draw: 'Unentschieden' }[outcome] || outcome;
     },
+    // Jeder serverseitige String, der per innerHTML eingefügt wird, MUSS hierdurch - Allianz-
+    // Name/Tag haben (anders als Spielername/Basisname) keine Zeichensatz-Beschränkung serverseitig.
+    escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[c]));
+    },
 };

@@ -45,9 +45,14 @@ const App = (() => {
                     return;
                 }
                 // refreshState() ist beim allerersten Aufruf ohne Netz gescheitert - es gibt noch
-                // keinen gecachten state() zum Anzeigen, also zurück zum Login mit Hinweis statt
-                // eines leeren Spielbildschirms.
-                $('login-error').textContent = 'Server nicht erreichbar. Bitte erneut versuchen.';
+                // keinen gecachten state() zum Anzeigen. WICHTIG: trotzdem gültigem Token NICHT
+                // das Registrierungsformular zeigen - sonst bekommt der Spieler, sobald der
+                // Server wieder da ist, ein verwirrendes 409 ("Gerät bereits registriert"), weil
+                // er ja schon existiert. Eigener Wiederholen-Button statt des Formulars (Phase 4,
+                // Advisor-Review-Fund: "Server weg beim App-Start" ist der häufigste Mobile-Fall,
+                // der bisherige Offline-Test deckte nur "Server stirbt WÄHREND der Session" ab).
+                showBootRetry();
+                return;
             } catch (e) {
                 // Token ungültig (401 hat clearSession() schon erledigt) - zurück zum Login,
                 // nicht in einer Fehlerschleife hängen bleiben.
@@ -56,9 +61,18 @@ const App = (() => {
         showLogin();
     }
 
+    function showBootRetry() {
+        $('login-screen').classList.remove('hidden');
+        $('game-screen').classList.add('hidden');
+        $('boot-retry').classList.remove('hidden');
+        $('register-form').classList.add('hidden');
+    }
+
     function showLogin() {
         $('login-screen').classList.remove('hidden');
         $('game-screen').classList.add('hidden');
+        $('boot-retry').classList.add('hidden');
+        $('register-form').classList.remove('hidden');
     }
 
     function showGame() {
@@ -70,6 +84,7 @@ const App = (() => {
     function initLoginForm() {
         $('login-submit').addEventListener('click', submitLogin);
         $('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+        $('boot-retry-btn').addEventListener('click', boot);
     }
 
     async function submitLogin() {
@@ -228,7 +243,7 @@ const App = (() => {
             ? base.buildQueue.map(q => `
                 <div class="queue-row">
                     <div class="row-main">
-                        <div class="row-title">${q.buildingName} &rarr; Lv. ${q.targetLevel}</div>
+                        <div class="row-title">${Format.escapeHtml(q.buildingName)} &rarr; Lv. ${q.targetLevel}</div>
                         <div class="row-sub">${Format.number(q.costTitanPaid)} Titan, ${Format.number(q.costDeuteriumPaid)} Deut. bezahlt</div>
                     </div>
                 </div>`).join('') + `<button class="btn danger" id="cancel-build-btn" style="margin-top:8px;">Letzten Auftrag stornieren (Rückerstattung)</button>`
@@ -248,7 +263,7 @@ const App = (() => {
             return `
                 <div class="building-row">
                     <div class="row-main">
-                        <div class="row-title">${b.name} <span class="row-sub">Lv. ${b.level} &rarr; ${b.level + 1}</span></div>
+                        <div class="row-title">${Format.escapeHtml(b.name)} <span class="row-sub">Lv. ${b.level} &rarr; ${b.level + 1}</span></div>
                         <div class="row-sub">Fertig in ${Format.duration(b.secondsRemaining)}</div>
                         <div class="progress-bar"><div class="fill" style="width:40%"></div></div>
                     </div>
@@ -258,7 +273,7 @@ const App = (() => {
         if (!b.nextLevel) {
             return `
                 <div class="building-row">
-                    <div class="row-main"><div class="row-title">${b.name}</div><div class="row-sub">Lv. ${b.level} (Maximum erreicht)</div></div>
+                    <div class="row-main"><div class="row-title">${Format.escapeHtml(b.name)}</div><div class="row-sub">Lv. ${b.level} (Maximum erreicht)</div></div>
                 </div>`;
         }
 
@@ -270,7 +285,7 @@ const App = (() => {
         return `
             <div class="building-row">
                 <div class="row-main">
-                    <div class="row-title">${b.name} <span class="row-sub">Lv. ${b.level} &rarr; ${nl.level}</span></div>
+                    <div class="row-title">${Format.escapeHtml(b.name)} <span class="row-sub">Lv. ${b.level} &rarr; ${nl.level}</span></div>
                     <div class="cost-line ${affordable ? '' : 'insufficient'}">
                         ${Format.number(nl.costTitan)} Titan · ${Format.number(nl.costDeuterium)} Deut.${nl.costCredits ? ' · ' + Format.number(nl.costCredits) + ' Cr.' : ''} · ${Format.duration(nl.buildSeconds)}
                     </div>
@@ -317,8 +332,8 @@ const App = (() => {
                 return `
                 <div class="ship-row">
                     <div class="row-main">
-                        <div class="row-title">${s.name}</div>
-                        <div class="row-sub">${s.description}</div>
+                        <div class="row-title">${Format.escapeHtml(s.name)}</div>
+                        <div class="row-sub">${Format.escapeHtml(s.description)}</div>
                         <div class="cost-line">${Format.number(s.costTitan)} Titan · ${Format.number(s.costDeuterium)} Deut.${s.costCredits ? ' · ' + Format.number(s.costCredits) + ' Cr.' : ''} · ${Format.duration(s.buildSeconds)}/Stk.</div>
                         ${locked ? `<div class="cost-line insufficient">Benötigt Werft-Level ${s.minShipyardLevel}</div>` : ''}
                     </div>
@@ -334,7 +349,7 @@ const App = (() => {
             ? base.shipQueue.map(q => `
                 <div class="queue-row">
                     <div class="row-main">
-                        <div class="row-title">${q.shipName} &times; ${q.quantity}</div>
+                        <div class="row-title">${Format.escapeHtml(q.shipName)} &times; ${q.quantity}</div>
                         <div class="row-sub">${q.active ? `Nächste Einheit in ${Format.duration(q.secondsRemainingForNextUnit)}` : 'Wartet'}</div>
                     </div>
                 </div>`).join('') + `<button class="btn danger" id="cancel-ship-btn" style="margin-top:8px;">Letzten Auftrag stornieren</button>`
@@ -343,7 +358,7 @@ const App = (() => {
         if (cancelShipBtn) cancelShipBtn.addEventListener('click', cancelShip);
 
         $('hangar-list').innerHTML = base.ships.length
-            ? base.ships.map(s => `<div class="ship-row"><div class="row-main"><div class="row-title">${s.name}</div></div><div class="row-sub">${s.quantity} Stk.</div></div>`).join('')
+            ? base.ships.map(s => `<div class="ship-row"><div class="row-main"><div class="row-title">${Format.escapeHtml(s.name)}</div></div><div class="row-sub">${s.quantity} Stk.</div></div>`).join('')
             : '<p class="row-sub">Hangar ist leer.</p>';
 
         renderDispatchForm();
@@ -415,7 +430,7 @@ const App = (() => {
             <div id="dispatch-ships">
                 ${base.ships.map(s => `
                     <div class="ship-row">
-                        <div class="row-main row-title">${s.name} (${s.quantity} verfügbar)</div>
+                        <div class="row-main row-title">${Format.escapeHtml(s.name)} (${s.quantity} verfügbar)</div>
                         <input type="number" min="0" max="${s.quantity}" value="${dispatchShipQty[s.id] || 0}" data-ship-qty="${s.id}" style="width:64px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px;">
                     </div>`).join('')}
             </div>
@@ -502,13 +517,13 @@ const App = (() => {
             const isLeader = alliance.leaderPlayerId === state.player.id;
             el.innerHTML = `
                 <div class="row-main" style="margin-bottom:10px;">
-                    <div class="row-title">[${alliance.tag}] ${alliance.name}</div>
+                    <div class="row-title">[${Format.escapeHtml(alliance.tag)}] ${Format.escapeHtml(alliance.name)}</div>
                     <div class="row-sub">${alliance.members.length} / ${alliance.memberCap} Mitglieder</div>
                 </div>
                 <div id="alliance-members">
                     ${alliance.members.map(m => `
                         <div class="queue-row">
-                            <div class="row-main"><div class="row-title">${m.username}${m.isLeader ? ' (Anführer)' : ''}</div></div>
+                            <div class="row-main"><div class="row-title">${Format.escapeHtml(m.username)}${m.isLeader ? ' (Anführer)' : ''}</div></div>
                             ${isLeader && !m.isLeader ? `<button class="btn danger" data-kick="${m.playerId}">Entfernen</button>` : ''}
                         </div>`).join('')}
                 </div>
@@ -534,8 +549,8 @@ const App = (() => {
                 ${list.alliances.length === 0 ? '<p class="row-sub">Noch keine Allianz gegründet.</p>' : list.alliances.map(a => `
                     <div class="queue-row">
                         <div class="row-main">
-                            <div class="row-title">[${a.tag}] ${a.name}</div>
-                            <div class="row-sub">Anführer: ${a.leaderName} · ${a.memberCount} / ${a.memberCap} Mitglieder</div>
+                            <div class="row-title">[${Format.escapeHtml(a.tag)}] ${Format.escapeHtml(a.name)}</div>
+                            <div class="row-sub">Anführer: ${Format.escapeHtml(a.leaderName)} · ${a.memberCount} / ${a.memberCap} Mitglieder</div>
                         </div>
                         <button class="btn primary" data-join="${a.id}" ${a.memberCount >= a.memberCap ? 'disabled' : ''}>Beitreten</button>
                     </div>`).join('')}
@@ -652,8 +667,8 @@ const App = (() => {
     }
 
     function slotLabel(slot) {
-        if (slot.type === 'base') return `${slot.name} (${slot.allianceTag ? '[' + slot.allianceTag + '] ' : ''}${slot.owner})${slot.protected ? ' · geschützt' : ''}`;
-        if (slot.type === 'npc_outpost') return `NPC-Außenposten: ${slot.name}`;
+        if (slot.type === 'base') return `${Format.escapeHtml(slot.name)} (${slot.allianceTag ? '[' + Format.escapeHtml(slot.allianceTag) + '] ' : ''}${Format.escapeHtml(slot.owner)})${slot.protected ? ' · geschützt' : ''}`;
+        if (slot.type === 'npc_outpost') return `NPC-Außenposten: ${Format.escapeHtml(slot.name)}`;
         if (slot.type === 'asteroid_field') return `Asteroidenfeld (+${slot.bonusPercent}%)`;
         if (slot.type === 'nebula') return 'Nebel';
         return slot.type;
