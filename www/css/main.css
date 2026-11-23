@@ -87,6 +87,17 @@ button {
 }
 #alert-bar.visible { display: block; }
 
+#offline-bar {
+    display: none;
+    background: #3a2f14;
+    color: #ffd180;
+    padding: 6px 12px;
+    font-size: 13px;
+    border-bottom: 1px solid #5a4a1f;
+    flex-shrink: 0;
+}
+#offline-bar.visible { display: block; }
+
 /* --- Views --- */
 #view-container {
     flex: 1;

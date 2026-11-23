@@ -9,8 +9,20 @@ const App = (() => {
     let pollTimer = null;
     let tickTimer = null;
     let mapInitialized = false;
+    let isOffline = false;
+    let pollIntervalMs = 25000;
+    const POLL_INTERVAL_NORMAL = 25000;
+    const POLL_INTERVAL_OFFLINE = 60000; // Backoff - kein Sinn, alle 25s gegen einen toten Server zu rennen
 
     function $(id) { return document.getElementById(id); }
+
+    function errorToast(e, fallback) {
+        if (e instanceof ApiError && e.isNetworkError) {
+            showToast('Keine Verbindung zum Server - bitte später erneut versuchen.');
+            return;
+        }
+        showToast((e && e.message) || fallback);
+    }
 
     function showToast(message) {
         const el = $('toast');
@@ -27,12 +39,18 @@ const App = (() => {
         if (Api.getToken()) {
             try {
                 await refreshState();
-                showGame();
-                startLoops();
-                return;
+                if (state) {
+                    showGame();
+                    startLoops();
+                    return;
+                }
+                // refreshState() ist beim allerersten Aufruf ohne Netz gescheitert - es gibt noch
+                // keinen gecachten state() zum Anzeigen, also zurück zum Login mit Hinweis statt
+                // eines leeren Spielbildschirms.
+                $('login-error').textContent = 'Server nicht erreichbar. Bitte erneut versuchen.';
             } catch (e) {
-                // Token ungültig (401 hat clearSession() schon erledigt) oder Server nicht
-                // erreichbar - zurück zum Login, nicht in einer Fehlerschleife hängen bleiben.
+                // Token ungültig (401 hat clearSession() schon erledigt) - zurück zum Login,
+                // nicht in einer Fehlerschleife hängen bleiben.
             }
         }
         showLogin();
@@ -82,8 +100,33 @@ const App = (() => {
     // State laden / Loops
     // ============================================================
     async function refreshState() {
-        state = await Api.get('/state');
-        renderAll();
+        try {
+            state = await Api.get('/state');
+            setOffline(false);
+            renderAll();
+        } catch (e) {
+            if (e instanceof ApiError && e.isNetworkError) {
+                // Server nicht erreichbar - letzten bekannten state() NICHT verwerfen, nur
+                // Banner zeigen und Polling verlangsamen statt den Spieler alle 25s erneut
+                // gegen einen toten Server laufen zu lassen.
+                setOffline(true);
+                return;
+            }
+            throw e;
+        }
+    }
+
+    function setOffline(offline) {
+        if (offline === isOffline) return;
+        isOffline = offline;
+        $('offline-bar').classList.toggle('visible', offline);
+        pollIntervalMs = offline ? POLL_INTERVAL_OFFLINE : POLL_INTERVAL_NORMAL;
+        if (pollTimer) restartPollTimer();
+    }
+
+    function restartPollTimer() {
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => refreshState().catch(() => {}), pollIntervalMs);
     }
 
     function startLoops() {
@@ -92,11 +135,13 @@ const App = (() => {
 
         // state() haelt global die GET_LOCK - nicht sekuendlich pollen, 25s reicht fuer einen
         // Aufbau-Titel, Countdown-Optik laeuft lokal ueber tick().
-        pollTimer = setInterval(() => refreshState().catch(() => {}), 25000);
+        restartPollTimer();
         tickTimer = setInterval(tick, 1000);
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') refreshState().catch(() => {});
         });
+        window.addEventListener('online', () => refreshState().catch(() => {}));
+        window.addEventListener('offline', () => setOffline(true));
     }
 
     function tick() {
@@ -241,7 +286,7 @@ const App = (() => {
             await Api.post('/base/build', { baseId: base.id, buildingTypeId });
             await refreshState();
         } catch (e) {
-            showToast(e.message || 'Fehler beim Ausbauen');
+            errorToast(e, 'Fehler beim Ausbauen');
         }
     }
 
@@ -251,7 +296,7 @@ const App = (() => {
             await Api.post('/base/cancel', { baseId: base.id });
             await refreshState();
         } catch (e) {
-            showToast(e.message || 'Fehler beim Stornieren');
+            errorToast(e, 'Fehler beim Stornieren');
         }
     }
 
@@ -323,7 +368,7 @@ const App = (() => {
             await Api.post('/base/ships/build', { baseId: base.id, shipTypeId, quantity: 1 });
             await refreshState();
         } catch (e) {
-            showToast(e.message || 'Fehler beim Schiffsbau');
+            errorToast(e, 'Fehler beim Schiffsbau');
         }
     }
 
@@ -333,7 +378,7 @@ const App = (() => {
             await Api.post('/base/ships/cancel', { baseId: base.id });
             await refreshState();
         } catch (e) {
-            showToast(e.message || 'Fehler beim Stornieren');
+            errorToast(e, 'Fehler beim Stornieren');
         }
     }
 
@@ -417,7 +462,7 @@ const App = (() => {
             dispatchTarget = null;
             await refreshState();
         } catch (e) {
-            showToast(e.message || 'Flottenversand fehlgeschlagen');
+            errorToast(e, 'Flottenversand fehlgeschlagen');
         }
     }
 

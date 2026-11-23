@@ -59,11 +59,19 @@ const Api = (() => {
         if (token) {
             headers.Authorization = `Bearer ${token}`;
         }
-        const res = await fetch(BASE_URL + path, {
-            method,
-            headers,
-            body: body !== undefined ? JSON.stringify(body) : undefined,
-        });
+        let res;
+        try {
+            res = await fetch(BASE_URL + path, {
+                method,
+                headers,
+                body: body !== undefined ? JSON.stringify(body) : undefined,
+            });
+        } catch (e) {
+            // fetch() wirft bei fehlender Verbindung (kein Netz, Server nicht erreichbar) ein
+            // TypeError - das ist KEIN 401 und darf Token/Device-ID nicht löschen, sonst verliert
+            // ein Spieler bei einem kurzen Netzaussetzer seine Session.
+            throw new ApiError('NETWORK_ERROR', 0, null, true);
+        }
 
         let data = null;
         try {
@@ -104,9 +112,10 @@ const Api = (() => {
 })();
 
 class ApiError extends Error {
-    constructor(message, status, body) {
+    constructor(message, status, body, isNetworkError) {
         super(message);
         this.status = status;
         this.body = body;
+        this.isNetworkError = !!isNetworkError;
     }
 }
