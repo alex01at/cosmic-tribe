@@ -1,2 +1,5 @@
 .dev-db/
 *.log
+node_modules/
+android/app/build/
+android/.gradle/

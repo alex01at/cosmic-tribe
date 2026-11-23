@@ -1,0 +1,8 @@
+{
+  "appId": "com.cosmictribe.app",
+  "appName": "Cosmic Tribe",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

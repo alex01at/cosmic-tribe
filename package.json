@@ -1,0 +1,13 @@
+{
+  "name": "cosmic-tribe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cosmic Tribe - Capacitor-Hülle für das statische www/-Frontend (Android-Build, Phase 4).",
+  "dependencies": {
+    "@capacitor/core": "6.1.2",
+    "@capacitor/android": "6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "6.1.2"
+  }
+}

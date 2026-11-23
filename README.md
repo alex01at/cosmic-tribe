@@ -71,4 +71,6 @@ Schiffs-Warteschlangen, Flottenversand und Kampfauflösung.
 - Phase 2: Auth, GameEngine, Kampfauflösung, Router mit CORS – fertig
 - Phase 2b: Werft-Warteschlange, Kartenabfrage, Zeitstempel-Fixes – fertig
 - Phase 3: Frontend (Basis, Werft/Flotten, Weltkarte, Berichte) – fertig
-- Phase 4 (Capacitor/Android, Allianzen, Balancing): offen
+- Phase 4: Offline-Handling, Werft-Stufen-Freischaltung + Balance-Check, Allianzen – fertig.
+  Capacitor/Android-Konfiguration ist vorbereitet (`capacitor.config.json`, `docs/ANDROID.md`),
+  aber **unverifiziert** – in dieser Dev-Umgebung fehlen Node/npm, JDK und Android-SDK komplett.
