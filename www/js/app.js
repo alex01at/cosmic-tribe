@@ -5,6 +5,7 @@ const App = (() => {
     let dispatchTarget = null; // {sectorId, x, y, position} - von der Karte gesetzt
     let dispatchMission = 'attack';
     let dispatchPreset = 'weapons';
+    let dispatchShipQty = {}; // shipTypeId -> eingetragene Menge, übersteht renderDispatchForm()
     let pollTimer = null;
     let tickTimer = null;
     let mapInitialized = false;
@@ -366,7 +367,7 @@ const App = (() => {
                 ${base.ships.map(s => `
                     <div class="ship-row">
                         <div class="row-main row-title">${s.name} (${s.quantity} verfügbar)</div>
-                        <input type="number" min="0" max="${s.quantity}" value="0" data-ship-qty="${s.id}" style="width:64px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px;">
+                        <input type="number" min="0" max="${s.quantity}" value="${dispatchShipQty[s.id] || 0}" data-ship-qty="${s.id}" style="width:64px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px;">
                     </div>`).join('')}
             </div>
             <button class="btn primary" id="dispatch-submit" style="width:100%; margin-top:8px;">Flotte losschicken</button>
@@ -377,6 +378,11 @@ const App = (() => {
         });
         document.querySelectorAll('[data-preset]').forEach(btn => {
             btn.addEventListener('click', () => { dispatchPreset = btn.dataset.preset; renderDispatchForm(); });
+        });
+        document.querySelectorAll('[data-ship-qty]').forEach(input => {
+            input.addEventListener('input', () => {
+                dispatchShipQty[input.dataset.shipQty] = parseInt(input.value, 10) || 0;
+            });
         });
         $('dispatch-submit').addEventListener('click', submitDispatch);
     }
@@ -407,6 +413,8 @@ const App = (() => {
                 energyPreset: dispatchPreset,
             });
             showToast(`Flotte unterwegs, Ankunft in ${Format.duration(res.arrivesInSeconds)}.`);
+            dispatchShipQty = {};
+            dispatchTarget = null;
             await refreshState();
         } catch (e) {
             showToast(e.message || 'Flottenversand fehlgeschlagen');
