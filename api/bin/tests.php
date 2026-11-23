@@ -122,9 +122,44 @@ echo "Test: erneute Registrierung derselben Geräte-ID wird abgelehnt\n";
 $reregister = apiCall('POST', '/api/register', ['deviceId' => $p2['deviceId'], 'username' => 'NeuerName']);
 check($reregister['status'] === 409, 'Zweite Registrierung mit bekannter device_id wird abgelehnt (409)');
 
+// --- Test 3b: Werft-Warteschlange (Schiffsbau) - seit Phase 2b Teil der API ---
+echo "Test: Schiffsbau kostet beim Einreihen, ist ohne Werft gesperrt, fremde Basis abgelehnt, Kette läuft offline durch\n";
+$p3b = registerPlayer($pdo, $createdDeviceIds, 'test-shipyard');
+$pdo->prepare('UPDATE bases SET titan = 20000, deuterium = 20000, credits = 20000 WHERE id = ?')->execute([$p3b['baseId']]);
+
+$noShipyard = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3b['baseId'], 'shipTypeId' => 1, 'quantity' => 1], $p3b['token']);
+check($noShipyard['status'] === 422, 'Schiffsbau ohne Werft wird abgelehnt (422), Status: ' . $noShipyard['status']);
+
+$foreignShipBuild = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3b['baseId'], 'shipTypeId' => 1, 'quantity' => 1], $p3['token']);
+check($foreignShipBuild['status'] === 403, 'Schiffsbau an fremder Basis wird abgelehnt (403)');
+
+apiCall('POST', '/api/base/build', ['baseId' => $p3b['baseId'], 'buildingTypeId' => 4], $p3b['token']); // Werft bauen
+$pdo->prepare("UPDATE base_buildings SET finishes_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE base_id = ? AND building_type_id = 4")
+    ->execute([$p3b['baseId']]);
+
+$beforeBuild = apiCall('GET', '/api/state', null, $p3b['token'])['body']['bases'][0];
+$order = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3b['baseId'], 'shipTypeId' => 1, 'quantity' => 3], $p3b['token']);
+check($order['status'] === 200, 'Schiffsbau-Bestellung (3 Scouts) wird angenommen, Status: ' . $order['status']);
+$scoutCost = 300; // ship_types.cost_titan für Scout (Migration 002)
+check(
+    $order['body']['titan'] === $beforeBuild['titan'] - 3 * $scoutCost,
+    'Kosten für alle 3 Scouts werden SOFORT beim Einreihen abgebucht, nicht erst beim Bau'
+);
+check(count($order['body']['shipQueue']) === 1 && $order['body']['shipQueue'][0]['quantity'] === 3, 'Werft-Warteschlange zeigt den offenen Auftrag mit Stückzahl 3');
+
+// Zeit weit genug vorspulen, dass alle 3 Einheiten (virtuelle Kette) fertig werden, während der
+// Spieler "offline" war - exakt dieselbe Lektion wie bei base_build_queue in Phase 2.
+$pdo->prepare('UPDATE base_ship_queue SET started_at = UTC_TIMESTAMP() - INTERVAL 10 MINUTE, finishes_at = UTC_TIMESTAMP() - INTERVAL 9 MINUTE WHERE base_id = ?')
+    ->execute([$p3b['baseId']]);
+$afterOffline = apiCall('GET', '/api/state', null, $p3b['token'])['body']['bases'][0];
+check($afterOffline['shipQueue'] === [], 'Werft-Warteschlange ist nach ausreichend Wartezeit komplett leer');
+check(
+    ($afterOffline['ships'][0]['quantity'] ?? 0) === 3,
+    'Alle 3 Scouts sind fertig, nicht nur einer - virtuelle Zeitverkettung verarbeitet die ganze Kette offline'
+);
+
 // --- Vorbereitung für Flotten-/Kampf-Tests: Testspieler bekommen Schiffe direkt in den Hangar ---
-// Werft-Warteschlange (Schiffsbau) ist NICHT Teil von Phase 2 (siehe Zusammenfassung) - Tests
-// bestücken den Hangar deshalb direkt per DB, wie hier dokumentiert.
+// (einfacher als jedes Mal eine Werft hochzuziehen und die Bauzeit zu überspringen)
 function giveShips(PDO $pdo, int $baseId, int $shipTypeId, int $quantity): void
 {
     $pdo->prepare(
@@ -400,6 +435,7 @@ if ($playerIds !== []) {
 
     if ($basePh !== null) {
         $pdo->prepare("DELETE FROM base_build_queue WHERE base_id IN ($basePh)")->execute($allBaseIds);
+        $pdo->prepare("DELETE FROM base_ship_queue WHERE base_id IN ($basePh)")->execute($allBaseIds);
         $pdo->prepare("DELETE FROM base_buildings WHERE base_id IN ($basePh)")->execute($allBaseIds);
         $pdo->prepare("DELETE FROM base_ships WHERE base_id IN ($basePh)")->execute($allBaseIds);
         $pdo->prepare("DELETE FROM bases WHERE id IN ($basePh)")->execute($allBaseIds);

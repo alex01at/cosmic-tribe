@@ -556,6 +556,7 @@ final class GameEngine
             // gar kein Level-Up fällig war) zum JETZT GÜLTIGEN (ggf. gerade erhöhten) Satz
             // abrechnen.
             $this->settleProduction($baseId, $asOf);
+            $this->advanceShipQueue($baseId, $asOf);
 
             if ($ownTransaction) {
                 $this->pdo->commit();
@@ -566,6 +567,167 @@ final class GameEngine
             }
             throw $e;
         }
+    }
+
+    // ============================================================
+    // Werft-Warteschlange (Schiffsbau) - siehe Migration 004-Kommentar. Dieselbe
+    // Virtuelle-Zeit-Verkettung wie bei base_build_queue, aber FIFO ueber Stueckzahl: die erste
+    // Zeile (kleinste id) ist der aktive Auftrag, nachfolgende sind erst vorgemerkt.
+    // ============================================================
+    private function advanceShipQueue(int $baseId, DateTimeImmutable $asOf): void
+    {
+        while (true) {
+            $stmt = $this->pdo->prepare('SELECT * FROM base_ship_queue WHERE base_id = ? ORDER BY id ASC LIMIT 1 FOR UPDATE');
+            $stmt->execute([$baseId]);
+            $job = $stmt->fetch();
+
+            if ($job === false) {
+                break;
+            }
+
+            if ($job['started_at'] === null) {
+                // Vorheriger Auftrag ist gerade fertig geworden (oder dies ist der allererste) -
+                // dieser Auftrag startet GENAU jetzt in virtueller Zeit, nicht bei "jetzt real".
+                $startedAt = $asOf;
+                $finishesAt = $startedAt->modify('+' . (int) $job['unit_build_seconds'] . ' seconds');
+                $this->pdo->prepare('UPDATE base_ship_queue SET started_at = ?, finishes_at = ? WHERE id = ?')
+                    ->execute([$startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s'), $job['id']]);
+                $job['started_at'] = $startedAt->format('Y-m-d H:i:s');
+                $job['finishes_at'] = $finishesAt->format('Y-m-d H:i:s');
+            }
+
+            $finishesAt = new DateTimeImmutable($job['finishes_at']);
+            if ($finishesAt > $asOf) {
+                break;
+            }
+
+            $this->pdo->prepare(
+                'INSERT INTO base_ships (base_id, ship_type_id, quantity) VALUES (?, ?, 1)
+                 ON DUPLICATE KEY UPDATE quantity = quantity + 1'
+            )->execute([$baseId, $job['ship_type_id']]);
+
+            $remaining = (int) $job['quantity'] - 1;
+            if ($remaining <= 0) {
+                $this->pdo->prepare('DELETE FROM base_ship_queue WHERE id = ?')->execute([$job['id']]);
+            } else {
+                $nextFinishesAt = $finishesAt->modify('+' . (int) $job['unit_build_seconds'] . ' seconds');
+                $this->pdo->prepare('UPDATE base_ship_queue SET quantity = ?, started_at = ?, finishes_at = ? WHERE id = ?')
+                    ->execute([$remaining, $finishesAt->format('Y-m-d H:i:s'), $nextFinishesAt->format('Y-m-d H:i:s'), $job['id']]);
+            }
+        }
+    }
+
+    private const MAX_SHIP_QUEUE_LENGTH = 5; // offene Auftraege (nicht Stueckzahl) je Basis
+    private const MAX_SHIP_ORDER_QUANTITY = 500;
+
+    public function queueShip(int $playerId, int $baseId, int $shipTypeId, int $quantity): array
+    {
+        if ($quantity < 1 || $quantity > self::MAX_SHIP_ORDER_QUANTITY) {
+            Response::error('Ungueltige Stueckzahl', 422);
+        }
+
+        $this->pdo->beginTransaction();
+
+        try {
+            $this->lockOwnBase($playerId, $baseId);
+            $this->advanceBaseTo($baseId, new DateTimeImmutable());
+            $base = $this->lockOwnBase($playerId, $baseId); // frisch nach advanceBaseTo() erneut lesen
+
+            $shipyardStmt = $this->pdo->prepare("SELECT level FROM base_buildings WHERE base_id = ? AND building_type_id = 4");
+            $shipyardStmt->execute([$baseId]);
+            $shipyardLevel = (int) ($shipyardStmt->fetchColumn() ?: 0);
+            if ($shipyardLevel < 1) {
+                $this->rollbackIfOpen();
+                Response::error('Werft muss zuerst gebaut werden', 422);
+            }
+
+            $queuedCountStmt = $this->pdo->prepare('SELECT COUNT(*) FROM base_ship_queue WHERE base_id = ?');
+            $queuedCountStmt->execute([$baseId]);
+            if ((int) $queuedCountStmt->fetchColumn() >= self::MAX_SHIP_QUEUE_LENGTH) {
+                $this->rollbackIfOpen();
+                Response::error('Werft-Warteschlange ist voll', 422);
+            }
+
+            $typeStmt = $this->pdo->prepare('SELECT * FROM ship_types WHERE id = ?');
+            $typeStmt->execute([$shipTypeId]);
+            $type = $typeStmt->fetch();
+            if ($type === false) {
+                $this->rollbackIfOpen();
+                Response::error('Schiffstyp existiert nicht', 404);
+            }
+
+            $totalTitan = (int) $type['cost_titan'] * $quantity;
+            $totalDeuterium = (int) $type['cost_deuterium'] * $quantity;
+            $totalCredits = (int) $type['cost_credits'] * $quantity;
+
+            if ($totalTitan > (int) $base['titan'] || $totalDeuterium > (int) $base['deuterium'] || $totalCredits > (int) $base['credits']) {
+                $this->rollbackIfOpen();
+                Response::error('Nicht genug Rohstoffe', 422);
+            }
+
+            $this->pdo->prepare('UPDATE bases SET titan = titan - ?, deuterium = deuterium - ?, credits = credits - ? WHERE id = ?')
+                ->execute([$totalTitan, $totalDeuterium, $totalCredits, $baseId]);
+
+            $unitBuildSeconds = $this->scaledSeconds((int) $type['build_seconds']);
+
+            $this->pdo->prepare(
+                'INSERT INTO base_ship_queue (base_id, ship_type_id, quantity, unit_cost_titan, unit_cost_deuterium, unit_cost_credits, unit_build_seconds)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+            )->execute([$baseId, $shipTypeId, $quantity, $type['cost_titan'], $type['cost_deuterium'], $type['cost_credits'], $unitBuildSeconds]);
+
+            // Falls das der einzige Auftrag ist, startet advanceShipQueue() ihn beim naechsten
+            // Aufruf automatisch (started_at ist NULL -> "aktiv, aber noch nicht gestartet").
+            $this->advanceBaseTo($baseId, new DateTimeImmutable());
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return $this->baseView($baseId);
+    }
+
+    public function cancelQueuedShip(int $playerId, int $baseId): array
+    {
+        $this->pdo->beginTransaction();
+
+        try {
+            $this->lockOwnBase($playerId, $baseId);
+
+            $stmt = $this->pdo->prepare('SELECT * FROM base_ship_queue WHERE base_id = ? ORDER BY id DESC LIMIT 1 FOR UPDATE');
+            $stmt->execute([$baseId]);
+            $last = $stmt->fetch();
+
+            if ($last === false) {
+                $this->rollbackIfOpen();
+                Response::error('Werft-Warteschlange ist leer', 422);
+            }
+
+            $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM base_ship_queue WHERE base_id = ?');
+            $countStmt->execute([$baseId]);
+            if ((int) $countStmt->fetchColumn() === 1) {
+                // Einziger Eintrag = der gerade aktiv laufende Auftrag (erste Zeile) - der kann
+                // nicht storniert werden, analog zum laufenden Gebaeude-Ausbau in Phase 2.
+                $this->rollbackIfOpen();
+                Response::error('Laufender Bauauftrag kann nicht storniert werden', 422);
+            }
+
+            $refundTitan = (int) $last['unit_cost_titan'] * (int) $last['quantity'];
+            $refundDeuterium = (int) $last['unit_cost_deuterium'] * (int) $last['quantity'];
+            $refundCredits = (int) $last['unit_cost_credits'] * (int) $last['quantity'];
+
+            $this->pdo->prepare('UPDATE bases SET titan = titan + ?, deuterium = deuterium + ?, credits = credits + ? WHERE id = ?')
+                ->execute([$refundTitan, $refundDeuterium, $refundCredits, $baseId]);
+            $this->pdo->prepare('DELETE FROM base_ship_queue WHERE id = ?')->execute([$last['id']]);
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return $this->baseView($baseId);
     }
 
     private function settleProduction(int $baseId, DateTimeImmutable $asOf): void
@@ -968,9 +1130,28 @@ final class GameEngine
                 'status' => $f['status'],
                 'originSector' => ['x' => (int) $f['origin_x'], 'y' => (int) $f['origin_y']],
                 'targetSector' => ['x' => (int) $f['target_x'], 'y' => (int) $f['target_y']],
-                'arrivesAt' => $f['arrives_at'],
+                'arrivesAtEpoch' => $this->toEpoch($f['arrives_at']),
             ];
         }, $fleetsStmt->fetchAll());
+
+        // Eingehende FEINDLICHE Flotten gegen eigene Basen - fuer die Sensor-/Angriffswarnung im
+        // Frontend. Bewusst NUR Ankunftszeit + Angreifername, NIE die Flottenzusammensetzung
+        // (Advisor-Review: das waere ein Informationsvorteil, den der echte Langstreckensensor in
+        // einer spaeteren Phase erst verdienen muesste).
+        $incomingStmt = $this->pdo->prepare(
+            "SELECT f.arrives_at, f.target_sector_id, f.target_position, p.username AS attacker_name
+             FROM fleets f
+             JOIN players p ON p.id = f.player_id
+             JOIN bases b ON b.sector_id = f.target_sector_id AND b.position = f.target_position
+             WHERE b.player_id = ? AND f.status = 'outbound' AND f.mission IN ('attack', 'plunder') AND f.player_id != ?"
+        );
+        $incomingStmt->execute([$player['id'], $player['id']]);
+        $incoming = array_map(fn ($f) => [
+            'attackerName' => $f['attacker_name'],
+            'targetSectorId' => (int) $f['target_sector_id'],
+            'targetPosition' => (int) $f['target_position'],
+            'arrivesAtEpoch' => $this->toEpoch($f['arrives_at']),
+        ], $incomingStmt->fetchAll());
 
         $reportsStmt = $this->pdo->prepare(
             // id DESC als Tie-Breaker: resolved_at hat nur Sekunden-Genauigkeit, zwei
@@ -990,15 +1171,111 @@ final class GameEngine
             'lootTitan' => (int) $r['loot_titan'],
             'lootDeuterium' => (int) $r['loot_deuterium'],
             'lootCredits' => (int) $r['loot_credits'],
-            'resolvedAt' => $r['resolved_at'],
+            'resolvedAtEpoch' => $this->toEpoch($r['resolved_at']),
         ], $reportsStmt->fetchAll());
 
         return [
+            'serverNow' => time(),
             'player' => ['id' => (int) $player['id'], 'username' => $player['username']],
             'bases' => $bases,
             'fleets' => $fleets,
+            'incomingHostileFleets' => $incoming,
             'combatReports' => $reports,
             'gameSpeed' => $this->gameSpeed,
+            'catalog' => $this->catalog(),
+        ];
+    }
+
+    /** Statische Katalogdaten (unabhaengig vom Spieler) - der Client braucht Schiffskosten/-werte,
+     * um die Werft-UI und Flottenzusammenstellung zu bauen, ohne sie hart zu verdrahten. */
+    private function catalog(): array
+    {
+        $shipTypes = $this->pdo->query('SELECT * FROM ship_types ORDER BY id')->fetchAll();
+
+        return [
+            'shipTypes' => array_map(fn ($s) => [
+                'id' => (int) $s['id'],
+                'name' => $s['name'],
+                'description' => $s['description'],
+                'attack' => (int) $s['attack'],
+                'shield' => (int) $s['shield'],
+                'hull' => (int) $s['hull'],
+                'speed' => (int) $s['speed'],
+                'cargoCapacity' => (int) $s['cargo_capacity'],
+                'costTitan' => (int) $s['cost_titan'],
+                'costDeuterium' => (int) $s['cost_deuterium'],
+                'costCredits' => (int) $s['cost_credits'],
+                'buildSeconds' => $this->scaledSeconds((int) $s['build_seconds']),
+                'isFlagship' => (bool) $s['is_flagship'],
+            ], $shipTypes),
+        ];
+    }
+
+    /**
+     * Sektor-Fenster um (cx,cy) fuer die Weltkarte - gibt NUR das zurueck, was ein Spieler legitim
+     * sehen darf: eigene/fremde Basisnamen+Besitzer+Schutzstatus, NIE fremde Rohstoffe/Schiffe
+     * (Advisor-Review-Fund).
+     */
+    public function mapWindow(int $cx, int $cy, int $radius): array
+    {
+        $radius = max(1, min(15, $radius));
+        $minX = $cx - $radius;
+        $maxX = $cx + $radius;
+        $minY = $cy - $radius;
+        $maxY = $cy + $radius;
+
+        $sectorsStmt = $this->pdo->prepare('SELECT id, x, y FROM sectors WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?');
+        $sectorsStmt->execute([$minX, $maxX, $minY, $maxY]);
+        $sectors = $sectorsStmt->fetchAll();
+        if ($sectors === []) {
+            return ['sectors' => []];
+        }
+
+        $sectorIds = array_map(fn ($s) => (int) $s['id'], $sectors);
+        $placeholders = implode(',', array_fill(0, count($sectorIds), '?'));
+
+        $basesStmt = $this->pdo->prepare(
+            "SELECT b.sector_id, b.position, b.name, b.protected_until, p.username
+             FROM bases b JOIN players p ON p.id = b.player_id
+             WHERE b.sector_id IN ($placeholders)"
+        );
+        $basesStmt->execute($sectorIds);
+        $basesBySector = [];
+        foreach ($basesStmt->fetchAll() as $b) {
+            $basesBySector[(int) $b['sector_id']][] = [
+                'position' => (int) $b['position'],
+                'type' => 'base',
+                'name' => $b['name'],
+                'owner' => $b['username'],
+                'protected' => $b['protected_until'] !== null && new DateTimeImmutable($b['protected_until']) > new DateTimeImmutable(),
+            ];
+        }
+
+        $npcStmt = $this->pdo->prepare("SELECT sector_id, position, name FROM npc_outposts WHERE sector_id IN ($placeholders)");
+        $npcStmt->execute($sectorIds);
+        foreach ($npcStmt->fetchAll() as $n) {
+            $basesBySector[(int) $n['sector_id']][] = ['position' => (int) $n['position'], 'type' => 'npc_outpost', 'name' => $n['name']];
+        }
+
+        $asteroidStmt = $this->pdo->prepare("SELECT sector_id, position, bonus_percent FROM asteroid_fields WHERE sector_id IN ($placeholders)");
+        $asteroidStmt->execute($sectorIds);
+        foreach ($asteroidStmt->fetchAll() as $a) {
+            $basesBySector[(int) $a['sector_id']][] = ['position' => (int) $a['position'], 'type' => 'asteroid_field', 'bonusPercent' => (int) $a['bonus_percent']];
+        }
+
+        $nebulaStmt = $this->pdo->prepare("SELECT sector_id, position FROM nebulae WHERE sector_id IN ($placeholders)");
+        $nebulaStmt->execute($sectorIds);
+        foreach ($nebulaStmt->fetchAll() as $n) {
+            $basesBySector[(int) $n['sector_id']][] = ['position' => (int) $n['position'], 'type' => 'nebula'];
+        }
+
+        return [
+            'sectors' => array_map(fn ($s) => [
+                'id' => (int) $s['id'],
+                'x' => (int) $s['x'],
+                'y' => (int) $s['y'],
+                'slots' => $basesBySector[(int) $s['id']] ?? [],
+            ], $sectors),
         ];
     }
 
@@ -1085,6 +1362,30 @@ final class GameEngine
             'costCreditsPaid' => (int) $q['cost_credits_paid'],
         ], $queueStmt->fetchAll());
 
+        $shipQueueStmt = $this->pdo->prepare(
+            'SELECT q.*, st.name FROM base_ship_queue q JOIN ship_types st ON st.id = q.ship_type_id
+             WHERE q.base_id = ? ORDER BY q.id ASC'
+        );
+        $shipQueueStmt->execute([$baseId]);
+        $shipQueue = array_map(function ($q) use ($now) {
+            $secondsRemaining = $q['finishes_at'] !== null
+                ? max(0, (new DateTimeImmutable($q['finishes_at']))->getTimestamp() - $now->getTimestamp())
+                : null;
+
+            return [
+                'id' => (int) $q['id'],
+                'shipName' => $q['name'],
+                'quantity' => (int) $q['quantity'],
+                'active' => $q['started_at'] !== null,
+                'secondsRemainingForNextUnit' => $secondsRemaining,
+            ];
+        }, $shipQueueStmt->fetchAll());
+
+        $titanRate = self::BASE_TITAN_PER_TICK + $this->productionEffectAmount($baseId, 'titan_production');
+        $deuteriumRate = self::BASE_DEUTERIUM_PER_TICK + $this->productionEffectAmount($baseId, 'deuterium_production');
+        $bonusFactor = 1 + ((int) $base['resource_bonus_percent'] / 100);
+        $ticksPerHour = 3600 / $this->scaledSeconds(self::TICK_SECONDS);
+
         return [
             'id' => (int) $base['id'],
             'name' => $base['name'],
@@ -1093,11 +1394,30 @@ final class GameEngine
             'titan' => (int) $base['titan'],
             'deuterium' => (int) $base['deuterium'],
             'credits' => (int) $base['credits'],
-            'protectedUntil' => $base['protected_until'],
+            'titanPerHour' => (int) round($titanRate * $bonusFactor * $ticksPerHour),
+            'deuteriumPerHour' => (int) round($deuteriumRate * $bonusFactor * $ticksPerHour),
+            'protectedUntil' => $this->toEpoch($base['protected_until']),
             'buildings' => $buildings,
             'ships' => $ships,
             'buildQueue' => $queue,
+            'shipQueue' => $shipQueue,
         ];
+    }
+
+    /**
+     * MySQL-Datetime-Strings (naiv, aber UTC - siehe Database.php) in Unix-Epoch umwandeln, statt
+     * sie roh an den Client zu geben (Advisor-Review-Fund: "Y-m-d H:i:s" parst JS als LOKALE Zeit,
+     * nicht UTC - jeder Countdown waere in Deutschland eine Stunde falsch, und die Android-WebView
+     * liefert fuer das Leerzeichen-Format teils "Invalid Date"). Der Client rechnet stattdessen
+     * selbst gegen das mitgelieferte serverNow.
+     */
+    private function toEpoch(?string $mysqlDatetime): ?int
+    {
+        if ($mysqlDatetime === null) {
+            return null;
+        }
+
+        return (new DateTimeImmutable($mysqlDatetime, new DateTimeZone('UTC')))->getTimestamp();
     }
 
     /**

@@ -55,6 +55,31 @@ $router->post('/api/base/cancel', function (array $body) use ($pdo, $gameSpeed) 
     Response::json($engine->cancelQueuedBuilding((int) $player['id'], $baseId));
 });
 
+$router->post('/api/base/ships/build', function (array $body) use ($pdo, $gameSpeed) {
+    $player = Auth::requirePlayer($pdo);
+    $baseId = (int) ($body['baseId'] ?? 0);
+    $shipTypeId = (int) ($body['shipTypeId'] ?? 0);
+    $quantity = (int) ($body['quantity'] ?? 0);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->queueShip((int) $player['id'], $baseId, $shipTypeId, $quantity));
+});
+
+$router->post('/api/base/ships/cancel', function (array $body) use ($pdo, $gameSpeed) {
+    $player = Auth::requirePlayer($pdo);
+    $baseId = (int) ($body['baseId'] ?? 0);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->cancelQueuedShip((int) $player['id'], $baseId));
+});
+
+$router->get('/api/map', function () use ($pdo, $gameSpeed) {
+    Auth::requirePlayer($pdo);
+    $cx = (int) ($_GET['cx'] ?? 0);
+    $cy = (int) ($_GET['cy'] ?? 0);
+    $radius = (int) ($_GET['r'] ?? 5);
+    $engine = new GameEngine($pdo, $gameSpeed);
+    Response::json($engine->mapWindow($cx, $cy, $radius));
+});
+
 $router->post('/api/fleet/dispatch', function (array $body) use ($pdo, $gameSpeed) {
     $player = Auth::requirePlayer($pdo);
     $baseId = (int) ($body['baseId'] ?? 0);
