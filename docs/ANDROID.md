@@ -16,10 +16,16 @@ ersten Play-Store-Upload nochmal bewusst bestätigen, nicht einfach durchlaufen 
 ## Einrichtung (einmalig)
 
 ```bash
-npm install
+npm install @capacitor/core@latest @capacitor/android@latest
+npm install --save-dev @capacitor/cli@latest
 npx cap add android
 npx cap sync android
 ```
+
+`package.json` listet keine feste Capacitor-Version - absichtlich, da hier keine Installation
+möglich war, um eine konkrete Version gegen die aktuellen Play-Store-Anforderungen zu prüfen
+(Googles Mindest-`targetSdk` wird jährlich angehoben). **Vor dem ersten Build: `targetSdk` in
+`android/app/build.gradle` gegen die aktuellen Play-Console-Anforderungen prüfen.**
 
 `npx cap add android` legt ein `android/`-Verzeichnis mit einem vollständigen Gradle-Projekt an -
 das NICHT in `.gitignore` ausschließen, es enthält projektspezifische Anpassungen (Icons,
@@ -29,17 +35,28 @@ Berechtigungen), kein reiner Build-Output.
 
 `androidScheme: "https"` in `capacitor.config.json` lässt die WebView die App selbst über
 `https://localhost` laden (nötig für `viewport-fit=cover` & moderne Web-APIs). Das Problem: die
-echte API läuft lokal nur über **`http://`** (siehe `api/config/config.php`). Eine `https`-Seite,
-die `http://`-Requests macht, wird von Android **standardmäßig blockiert** (Cleartext-Traffic-
-Policy ab API 28).
+echte API läuft lokal nur über **`http://`** (siehe `api/config/config.php`). Das sind ZWEI
+getrennte Android-Mechanismen, die beide zuschlagen können - nicht denselben Fix verwechseln:
 
-- **Für den Dev-Build auf dem eigenen Testgerät:** in `android/app/src/main/AndroidManifest.xml`
-  nach `npx cap add android` `android:usesCleartextTraffic="true"` im `<application>`-Tag
-  ergänzen, UND `www/config.js` auf die LAN-IP des Dev-Rechners zeigen lassen (nicht
-  `127.0.0.1` - das wäre im Telefon das Telefon selbst, nicht der Dev-Rechner).
+1. **Cleartext-Traffic-Policy** (ab API 28): blockt `http://`-Netzwerk-Requests der APP generell.
+2. **WebView-Mixed-Content-Blocking**: blockt zusätzlich, unabhängig davon, dass eine über
+   `https://` geladene SEITE `http://`-Ressourcen nachlädt - das ist genau der Fall hier
+   (`https://localhost`-WebView ruft eine `http://`-API). Cleartext-Erlaubnis allein reicht
+   NICHT, wenn dieser zweite Mechanismus noch blockt.
+
+- **Für den Dev-Build auf dem eigenen Testgerät, zwei Optionen:**
+  - (a) `android:usesCleartextTraffic="true"` in `android/app/src/main/AndroidManifest.xml`
+    UND Mixed-Content erlauben (Capacitor-Doku zu `WebViewAssetLoader`/`allowMixedContent`
+    prüfen - je Capacitor-Version unterschiedlich benannt/konfiguriert).
+  - (b) Einfacher für reines Dev-Testing: `androidScheme: "http"` in `capacitor.config.json`
+    setzen (keine Mixed-Content-Situation mehr, da beide Seiten `http` sind) - dann aber separat
+    prüfen, ob `viewport-fit=cover`/Safe-Area-Insets unter `http`-Scheme noch zuverlässig
+    funktionieren (in dieser Umgebung nicht testbar).
+  - In beiden Fällen: `www/config.js` auf die LAN-IP des Dev-Rechners zeigen lassen (nicht
+    `127.0.0.1` - das wäre im Telefon das Telefon selbst, nicht der Dev-Rechner).
 - **Für einen echten Produktiv-Build:** die API muss über eine echte `https://`-Domain laufen
-  (Let's Encrypt o.ä.). `usesCleartextTraffic` dann NICHT setzen (Sicherheitsrisiko) und
-  `www/config.js` auf die `https://`-API-URL zeigen lassen.
+  (Let's Encrypt o.ä.). Dann `androidScheme: "https"` behalten, `usesCleartextTraffic` NICHT
+  setzen (Sicherheitsrisiko) und `www/config.js` auf die `https://`-API-URL zeigen lassen.
 
 ## Build
 

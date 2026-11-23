@@ -78,14 +78,31 @@ printf(
     fmtDuration((int) round(max($waitForTitan, $waitForDeuterium)))
 );
 
-echo "\n=== NPC-Außenposten: Beute vs. Flottenkosten (via CombatResolver::resolve(), kein Zufall) ===\n";
+echo "\n=== NPC-Außenposten: Beute vs. Flottenkosten (ECHTE Außenposten-Zeilen, echte capLootByCargo()/npcLootAvailability() per Reflection) ===\n";
 echo "(NPC-Beute ist NICHT durch PLUNDER_MAX_PERCENT gedeckelt - das gilt nur für Spielerbasen.)\n";
 
 $interceptor = array_values(array_filter($shipTypes, fn ($s) => $s['name'] === 'Abfangjäger'))[0];
+$transporter = array_values(array_filter($shipTypes, fn ($s) => $s['name'] === 'Transporter'))[0];
 $npcDefenseMethod = new ReflectionMethod(CombatResolver::class, 'npcDefenseAsShip');
 $npcDefenseMethod->setAccessible(true);
+$capLootMethod = new ReflectionMethod(GameEngine::class, 'capLootByCargo');
+$capLootMethod->setAccessible(true);
+$npcLootAvailabilityMethod = new ReflectionMethod(GameEngine::class, 'npcLootAvailability');
+$npcLootAvailabilityMethod->setAccessible(true);
 
-foreach ([50, 150, 250, 400] as $defenseStrength) {
+// 4 ECHTE Außenposten-Zeilen über das Staerke-Spektrum verteilt, keine erfundenen Werte.
+$npcCount = (int) $pdo->query('SELECT COUNT(*) FROM npc_outposts')->fetchColumn();
+$sampleNpcs = [];
+if ($npcCount > 0) {
+    foreach ([0.0, 0.33, 0.66, 0.99] as $pct) {
+        $offset = min($npcCount - 1, (int) floor($pct * $npcCount));
+        $row = $pdo->query("SELECT * FROM npc_outposts ORDER BY defense_strength ASC LIMIT 1 OFFSET $offset")->fetch();
+        $sampleNpcs[$row['id']] = $row; // dedupliziert über die ID, falls zwei Perzentile denselben Offset treffen
+    }
+}
+
+foreach ($sampleNpcs as $npc) {
+    $defenseStrength = (int) $npc['defense_strength'];
     $defenderShips = $npcDefenseMethod->invoke(null, $defenseStrength);
     $won = false;
     for ($qty = 1; $qty <= 200; $qty++) {
@@ -100,25 +117,59 @@ foreach ([50, 150, 250, 400] as $defenseStrength) {
         printf("defense_strength=%-3d: selbst 200 Abfangjäger gewinnen nicht (Formel/Daten prüfen)\n", $defenseStrength);
         continue;
     }
+
+    $availability = $npcLootAvailabilityMethod->invoke($engine, $npc); // 1.0, da last_raided_at hier NULL ist
+    $rawLoot = [
+        'titan' => (int) round($npc['loot_titan'] * $availability),
+        'deuterium' => (int) round($npc['loot_deuterium'] * $availability),
+        'credits' => (int) round($npc['loot_credits'] * $availability),
+    ];
+
+    $combatOnlyAttackerShips = [['type' => $interceptor, 'quantity' => $qty]];
+    $cappedCombatOnly = $capLootMethod->invoke($engine, $rawLoot, $combatOnlyAttackerShips);
+
     $fleetCostTitan = $qty * (int) $interceptor['cost_titan'];
     $fleetCostDeuterium = $qty * (int) $interceptor['cost_deuterium'];
-    $avgLootFactor = 3.5; // Mittelwert aus seed.php: loot = strength * random_int(2,5)
-    $avgLootTitan = (int) round($defenseStrength * $avgLootFactor);
+    // Echte Kosten sind nur der ANTEILIGE Verlust (attackerLossRatio), nicht die volle Flotte -
+    // die Flotte selbst geht bei einem Sieg nicht verloren, nur ein Teil nimmt Hüllenschaden.
+    $lossRatio = $combat['attackerLossRatio'];
+    $actualCostTitan = (int) round($fleetCostTitan * $lossRatio);
+    $actualCostDeuterium = (int) round($fleetCostDeuterium * $lossRatio);
+
+    $rawTotal = $rawLoot['titan'] + $rawLoot['deuterium'] + $rawLoot['credits'];
+    $cappedTotal = $cappedCombatOnly['titan'] + $cappedCombatOnly['deuterium'] + $cappedCombatOnly['credits'];
+
     printf(
-        "defense_strength=%-3d: %3d Abfangjäger nötig (%5d Titan, %5d Deuterium Flottenwert) vs. ~%4d Titan erwartbare Beute -> %s\n",
-        $defenseStrength, $qty, $fleetCostTitan, $fleetCostDeuterium, $avgLootTitan,
-        $avgLootTitan >= $fleetCostTitan ? 'Beute deckt Flottenkosten' : 'Beute deckt Flottenkosten NICHT (Verlustwaffe ohne Rückflug-Überlebende)'
+        "defense_strength=%-3d: %3d Abfangjäger nötig. Beute roh: %d Titan/%d Deut./%d Cr. -> nach Frachtraum-Deckel (nur Kampfschiffe, %d Frachtraum gesamt): %d Titan/%d Deut./%d Cr. (%.0f%% der rohen Beute geht verloren, kein Platz)\n",
+        $defenseStrength, $qty, $rawLoot['titan'], $rawLoot['deuterium'], $rawLoot['credits'],
+        $qty * (int) $interceptor['cargo_capacity'], $cappedCombatOnly['titan'], $cappedCombatOnly['deuterium'], $cappedCombatOnly['credits'],
+        $rawTotal > 0 ? (1 - $cappedTotal / $rawTotal) * 100 : 0
+    );
+    printf(
+        "    Tatsächlicher Flottenverlust (Hüllenschaden-Anteil %.0f%%): ~%d Titan, ~%d Deuterium -> %s\n",
+        $lossRatio * 100, $actualCostTitan, $actualCostDeuterium,
+        $cappedTotal >= ($actualCostTitan + $actualCostDeuterium) ? 'Beute deckt den tatsächlichen Verlust' : 'Beute deckt den tatsächlichen Verlust NICHT'
+    );
+
+    $neededCargo = $rawTotal;
+    $transportersNeeded = (int) ceil(max(0, $neededCargo - $qty * (int) $interceptor['cargo_capacity']) / (int) $transporter['cargo_capacity']);
+    printf(
+        "    Mit Transporter-Eskorte (je %d Frachtraum): %d Transporter zusätzlich würden die volle rohe Beute abtransportieren.\n",
+        $transporter['cargo_capacity'], $transportersNeeded
     );
 }
-echo "Hinweis: die Flotte selbst geht beim Sieg nicht verloren (nur anteiliger Hüllenschaden),\n";
-echo "der Vergleich ist daher konservativ - echte Kosten sind nur der anteilige Verlust, nicht die volle Flotte.\n";
+echo "Fazit: Kampfschiffe allein haben kaum Frachtraum - Plünderungen brauchen in der Praxis eine\n";
+echo "Transporter-Eskorte, nicht nur eine siegfähige Kampfflotte. Das ist die eigentliche Erkenntnis,\n";
+echo "nicht 'die Beute ist zu niedrig' (frühere Version dieses Scripts hatte den Frachtraum-Deckel\n";
+echo "übersehen und dadurch die falsche Schlussfolgerung gezogen).\n";
 
-echo "\n=== Jeder Schiffstyp einzeln vs. NPC-Außenposten (1 Schiffseinheit) ===\n";
+echo "\n=== Jeder Schiffstyp einzeln vs. NPC-Außenposten (1 Schiffseinheit, dieselben echten Außenposten wie oben) ===\n";
+$sampleStrengths = array_map(fn ($n) => (int) $n['defense_strength'], $sampleNpcs);
 foreach ($shipTypes as $type) {
     if ($type['is_flagship']) {
         continue;
     }
-    foreach ([50, 150, 250, 400] as $defenseStrength) {
+    foreach ($sampleStrengths as $defenseStrength) {
         $defenderShips = $npcDefenseMethod->invoke(null, $defenseStrength);
         $combat = CombatResolver::resolve([['type' => $type, 'quantity' => 1]], $defenderShips, 0, 'weapons');
         printf(
