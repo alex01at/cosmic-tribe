@@ -1281,7 +1281,9 @@ final class GameEngine
 
     public function baseView(int $baseId): array
     {
-        $baseStmt = $this->pdo->prepare('SELECT * FROM bases WHERE id = ?');
+        $baseStmt = $this->pdo->prepare(
+            'SELECT b.*, s.x AS sector_x, s.y AS sector_y FROM bases b JOIN sectors s ON s.id = b.sector_id WHERE b.id = ?'
+        );
         $baseStmt->execute([$baseId]);
         $base = $baseStmt->fetch();
 
@@ -1390,6 +1392,8 @@ final class GameEngine
             'id' => (int) $base['id'],
             'name' => $base['name'],
             'sectorId' => (int) $base['sector_id'],
+            'sectorX' => (int) $base['sector_x'],
+            'sectorY' => (int) $base['sector_y'],
             'position' => (int) $base['position'],
             'titan' => (int) $base['titan'],
             'deuterium' => (int) $base['deuterium'],

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Starforge</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div id="app">
+
+  <div id="login-screen">
+    <h1>Starforge</h1>
+    <p>Gib deinen Kommandanten-Namen ein, um deine erste Basis zu gründen.</p>
+    <input id="login-username" type="text" placeholder="Name (3-20 Zeichen)" maxlength="20" autocomplete="off">
+    <button class="btn primary" id="login-submit" style="width:100%;max-width:280px;">Basis gründen</button>
+    <div id="login-error"></div>
+  </div>
+
+  <div id="game-screen" class="hidden" style="display:flex; flex-direction:column; height:100%;">
+
+    <div id="resource-bar">
+      <div class="resource-chip titan">
+        <span class="label">Titan</span>
+        <span class="value" id="res-titan">0</span>
+        <span class="rate" id="res-titan-rate"></span>
+      </div>
+      <div class="resource-chip deuterium">
+        <span class="label">Deuterium</span>
+        <span class="value" id="res-deuterium">0</span>
+        <span class="rate" id="res-deuterium-rate"></span>
+      </div>
+      <div class="resource-chip credits">
+        <span class="label">Credits</span>
+        <span class="value" id="res-credits">0</span>
+      </div>
+    </div>
+
+    <div id="alert-bar"></div>
+
+    <div id="view-container">
+
+      <section id="view-map" class="view">
+        <div class="panel">
+          <h2>Weltkarte</h2>
+          <div id="map-canvas-wrap">
+            <canvas id="map-canvas"></canvas>
+          </div>
+          <div id="map-slot-panel" class="panel" style="margin-bottom:0;"></div>
+        </div>
+      </section>
+
+      <section id="view-base" class="view active">
+        <div class="panel">
+          <h2 id="base-name">Basis</h2>
+          <div id="base-buildings"></div>
+        </div>
+        <div class="panel" id="base-queue-panel">
+          <h2>Bau-Warteschlange</h2>
+          <div id="base-queue"></div>
+        </div>
+      </section>
+
+      <section id="view-fleets" class="view">
+        <div class="panel">
+          <h2>Werft</h2>
+          <div id="shipyard-list"></div>
+          <div id="shipyard-queue"></div>
+        </div>
+        <div class="panel">
+          <h2>Hangar</h2>
+          <div id="hangar-list"></div>
+        </div>
+        <div class="panel">
+          <h2>Flotte entsenden</h2>
+          <div id="dispatch-form"></div>
+        </div>
+        <div class="panel">
+          <h2>Unterwegs</h2>
+          <div id="fleets-active"></div>
+        </div>
+      </section>
+
+      <section id="view-reports" class="view">
+        <div class="panel">
+          <h2>Kampfberichte</h2>
+          <div id="reports-list"></div>
+        </div>
+      </section>
+
+      <section id="view-alliance" class="view">
+        <div class="panel">
+          <h2>Allianz</h2>
+          <p style="color:var(--text-dim);">Kommt in Phase 4.</p>
+        </div>
+      </section>
+
+    </div>
+
+    <div id="bottom-nav">
+      <button class="nav-btn" data-view="map"><span class="icon">&#127760;</span>Weltkarte</button>
+      <button class="nav-btn active" data-view="base"><span class="icon">&#127968;</span>Basis</button>
+      <button class="nav-btn" data-view="fleets"><span class="icon">&#128640;</span>Flotten</button>
+      <button class="nav-btn" data-view="reports"><span class="icon">&#128220;</span>Berichte</button>
+      <button class="nav-btn" data-view="alliance" disabled><span class="icon">&#128737;</span>Allianz</button>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+</div>
+
+<script src="config.js"></script>
+<script src="js/api.js"></script>
+<script src="js/format.js"></script>
+<script src="js/map.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
