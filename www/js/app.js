@@ -9,6 +9,10 @@ const App = (() => {
     let pollTimer = null;
     let tickTimer = null;
     let mapInitialized = false;
+    let baseViewMode = (() => {
+        try { return localStorage.getItem('sf_base_view_mode') || 'scene'; } catch (e) { return 'scene'; }
+    })();
+    let selectedBuildingId = null;
     let isOffline = false;
     let pollIntervalMs = 25000;
     const POLL_INTERVAL_NORMAL = 25000;
@@ -288,7 +292,27 @@ const App = (() => {
         $('base-subtitle').textContent = `Sektor ${base.sectorX}:${base.sectorY}${protectedLabel}`;
         renderResourceBar();
 
-        $('base-buildings').innerHTML = base.buildings.map(b => buildingRowHtml(base, b)).join('');
+        $('base-view-toggle').textContent = baseViewMode === 'scene' ? '☰ Liste' : '🛰️ Szene';
+        $('base-scene-wrap').classList.toggle('hidden', baseViewMode !== 'scene');
+        $('base-scene-detail').classList.toggle('hidden', baseViewMode !== 'scene');
+        $('base-buildings').classList.toggle('hidden', baseViewMode === 'scene');
+
+        if (baseViewMode === 'scene') {
+            if (selectedBuildingId === null || !base.buildings.some(b => b.id === selectedBuildingId)) {
+                const command = base.buildings.find(b => b.effect === 'command');
+                selectedBuildingId = command ? command.id : (base.buildings[0] ? base.buildings[0].id : null);
+            }
+            BaseScene.render(base, selectedBuildingId);
+            const selected = base.buildings.find(b => b.id === selectedBuildingId);
+            $('base-scene-detail').innerHTML = selected
+                ? buildingRowHtml(base, selected)
+                : '<p class="row-sub">Gebäude antippen zum Ausbauen.</p>';
+            $('base-buildings').innerHTML = '';
+        } else {
+            $('base-buildings').innerHTML = base.buildings.map(b => buildingRowHtml(base, b)).join('');
+            $('base-scene-detail').innerHTML = '';
+        }
+
         $('base-queue').innerHTML = base.buildQueue.length
             ? base.buildQueue.map(q => `
                 <div class="queue-row">
@@ -862,10 +886,23 @@ const App = (() => {
         return slot.type;
     }
 
+    function initBaseScene() {
+        BaseScene.init($('base-scene-canvas'), $('base-scene-wrap'), (buildingId) => {
+            selectedBuildingId = buildingId;
+            renderBase();
+        });
+        $('base-view-toggle').addEventListener('click', () => {
+            baseViewMode = baseViewMode === 'scene' ? 'list' : 'scene';
+            try { localStorage.setItem('sf_base_view_mode', baseViewMode); } catch (e) { /* privater Modus o.ä. - kein Beinbruch, nur nicht gemerkt */ }
+            renderBase();
+        });
+    }
+
     function init() {
         initLoginForm();
         initNav();
         initMap();
+        initBaseScene();
         boot();
     }
 

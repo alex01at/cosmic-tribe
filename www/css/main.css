@@ -277,6 +277,16 @@ button {
 .base-header h2 { margin: 0; }
 .base-header .row-sub { font-size: 12px; }
 
+#base-scene-wrap {
+    position: relative;
+    height: 260px;
+    background: #060a14;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    touch-action: manipulation;
+}
+#base-scene-canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
+
 .outcome-attacker_win { color: var(--success); }
 .outcome-defender_win { color: var(--danger); }
 .outcome-draw { color: var(--warning); }
