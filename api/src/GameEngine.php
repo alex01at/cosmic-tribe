@@ -1174,6 +1174,7 @@ final class GameEngine
                 'status' => $f['status'],
                 'originSector' => ['x' => (int) $f['origin_x'], 'y' => (int) $f['origin_y']],
                 'targetSector' => ['x' => (int) $f['target_x'], 'y' => (int) $f['target_y']],
+                'targetPosition' => (int) $f['target_position'],
                 'arrivesAtEpoch' => $this->toEpoch($f['arrives_at']),
             ];
         }, $fleetsStmt->fetchAll());

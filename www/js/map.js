@@ -14,6 +14,8 @@ const MapView = (() => {
     let sectors = [];
     let onSlotTap = null;
     let ownUsername = null;
+    let activeFleetTargets = []; // [{x, y, position}] - eigene outbound Angriffs-/Plünderflotten
+    let blinkRafId = null;
 
     let dragging = false, dragStartX = 0, dragStartY = 0, dragMoved = false;
     let pinchStartDist = null, pinchStartCellSize = 48;
@@ -31,6 +33,7 @@ const MapView = (() => {
     const COLOR_NPC = '#ff5c5c';
     const COLOR_ASTEROID = '#e8a33d';
     const COLOR_NEBULA = '#9a6bff';
+    const COLOR_ATTACK = '#ff3344';
 
     function init(canvasEl, wrapEl, slotTapCallback) {
         canvas = canvasEl;
@@ -50,6 +53,35 @@ const MapView = (() => {
 
     function setOwnUsername(username) {
         ownUsername = username;
+    }
+
+    // Laeuft nur, waehrend mindestens eine eigene Flotte unterwegs zu einem Angriffs-/
+    // Plünderungsziel ist - sonst bliebe draw() dauerhaft in einer requestAnimationFrame-Schleife,
+    // obwohl die Karte die meiste Zeit völlig statisch ist (Akku/CPU auf dem Handy).
+    function setActiveFleets(targets) {
+        activeFleetTargets = targets;
+        if (activeFleetTargets.length > 0) {
+            startBlinkLoop();
+        } else {
+            stopBlinkLoop();
+            draw();
+        }
+    }
+
+    function startBlinkLoop() {
+        if (blinkRafId !== null) return;
+        const step = () => {
+            draw();
+            blinkRafId = requestAnimationFrame(step);
+        };
+        blinkRafId = requestAnimationFrame(step);
+    }
+
+    function stopBlinkLoop() {
+        if (blinkRafId !== null) {
+            cancelAnimationFrame(blinkRafId);
+            blinkRafId = null;
+        }
     }
 
     function resize() {
@@ -280,7 +312,24 @@ const MapView = (() => {
                 const [ox, oy] = SLOT_OFFSETS[slot.position] || [0.5, 0.5];
                 drawSlotMarker(px + ox * cellSize, py + oy * cellSize, slot, cellSize);
             }
+
+            for (const target of activeFleetTargets) {
+                if (target.x !== sector.x || target.y !== sector.y) continue;
+                const [ox, oy] = SLOT_OFFSETS[target.position] || [0.5, 0.5];
+                drawAttackBlink(px + ox * cellSize, py + oy * cellSize, cellSize);
+            }
         }
+    }
+
+    function drawAttackBlink(x, y, size) {
+        const r = Math.max(2.5, size * 0.1);
+        const phase = 0.35 + 0.55 * Math.abs(Math.sin(performance.now() / 260));
+        ctx.strokeStyle = hexToRgba(COLOR_ATTACK, phase);
+        ctx.lineWidth = Math.max(1.5, r * 0.35);
+        ctx.beginPath();
+        ctx.arc(x, y, r * 2.3, 0, Math.PI * 2);
+        ctx.stroke();
+        drawGlow(x, y, r * 3, COLOR_ATTACK, phase * 0.35);
     }
 
     function drawSlotMarker(x, y, slot, size) {
@@ -354,5 +403,5 @@ const MapView = (() => {
         }
     }
 
-    return { init, loadWindow, centerOn, resize, setOwnUsername };
+    return { init, loadWindow, centerOn, resize, setOwnUsername, setActiveFleets };
 })();

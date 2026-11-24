@@ -331,6 +331,16 @@ const App = (() => {
         renderBase();
         renderFleets();
         renderReports();
+        updateMapActiveFleets();
+    }
+
+    // Blinkende Zielmarkierung auf der Karte, solange eine eigene Angriffs-/Plünderflotte
+    // unterwegs ist - MapView kümmert sich selbst um die Animationsschleife (siehe map.js).
+    function updateMapActiveFleets() {
+        const targets = (state.fleets || [])
+            .filter(f => f.status === 'outbound' && (f.mission === 'attack' || f.mission === 'plunder'))
+            .map(f => ({ x: f.targetSector.x, y: f.targetSector.y, position: f.targetPosition }));
+        MapView.setActiveFleets(targets);
     }
 
     function renderResourceBar() {
@@ -949,6 +959,7 @@ const App = (() => {
                 btn.addEventListener('click', () => {
                     dispatchTarget = { sectorId: sector.id, x, y, position: parseInt(btn.dataset.pickSlot, 10) };
                     showToast(`Ziel gesetzt: Sektor ${x}:${y}, Slot ${dispatchTarget.position}`);
+                    renderDispatchForm();
                     switchView('fleets');
                 });
             });
