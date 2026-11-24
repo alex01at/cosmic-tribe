@@ -512,12 +512,17 @@ const App = (() => {
                         <div class="cost-line">${Format.number(s.costTitan)} Titan · ${Format.number(s.costDeuterium)} Deut.${s.costCredits ? ' · ' + Format.number(s.costCredits) + ' Cr.' : ''} · ${Format.duration(s.buildSeconds)}/Stk.</div>
                         ${locked ? `<div class="cost-line insufficient">Benötigt Werft-Level ${s.minShipyardLevel}</div>` : ''}
                     </div>
-                    <button class="btn ${locked ? '' : 'primary'}" data-build-ship="${s.id}" ${locked ? 'disabled' : ''}>+1</button>
+                    ${locked ? '' : `<input type="number" min="1" max="500" value="1" data-ship-order-qty="${s.id}" style="width:56px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px; margin-right:6px;">`}
+                    <button class="btn ${locked ? '' : 'primary'}" data-build-ship="${s.id}" ${locked ? 'disabled' : ''}>Bauen</button>
                 </div>`;
             }).join('');
 
         document.querySelectorAll('[data-build-ship]').forEach(btn => {
-            btn.addEventListener('click', () => queueShip(parseInt(btn.dataset.buildShip, 10)));
+            btn.addEventListener('click', () => {
+                const qtyInput = document.querySelector(`[data-ship-order-qty="${btn.dataset.buildShip}"]`);
+                const quantity = Math.max(1, Math.min(500, parseInt(qtyInput?.value, 10) || 1));
+                queueShip(parseInt(btn.dataset.buildShip, 10), quantity);
+            });
         });
 
         $('shipyard-queue').innerHTML = base.shipQueue.length
@@ -581,10 +586,10 @@ const App = (() => {
         return { attack: 'Angriff', plunder: 'Plünderung', station: 'Stationierung', transport: 'Transport', colonize: 'Kolonisierung' }[m] || m;
     }
 
-    async function queueShip(shipTypeId) {
+    async function queueShip(shipTypeId, quantity) {
         const base = currentBase();
         try {
-            await Api.post('/base/ships/build', { baseId: base.id, shipTypeId, quantity: 1 });
+            await Api.post('/base/ships/build', { baseId: base.id, shipTypeId, quantity: quantity || 1 });
             await refreshState();
         } catch (e) {
             errorToast(e, 'Fehler beim Schiffsbau');

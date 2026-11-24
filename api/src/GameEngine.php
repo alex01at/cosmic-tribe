@@ -379,29 +379,38 @@ final class GameEngine
         // Unentschieden/Verteidiger-Sieg: kein Loot (siehe CombatResolver-Kommentar zu 'draw'),
         // nur die oben schon angewendeten Verluste auf beiden Seiten.
 
-        $this->applyLossRatioToFleet($fleet['id'], $combat['attackerLossRatio']);
+        $isNpcDefender = $targetBase === false;
+        $this->applyLossRatioToFleet($fleet['id'], $combat['attackerLossRatio'], $isNpcDefender);
 
-        // Verlust-Schnappschuss pro Schiffstyp fuers Kampfbericht-Frontend - dieselbe floor()-
-        // Rechnung wie applyLossRatio()/applyLossRatioToFleet(), damit die im Bericht gezeigten
-        // Stueckzahlen exakt zu dem passen, was tatsaechlich von der Flotte/Basis abgezogen wurde
-        // (keine separate, potenziell abweichende Rundung).
-        $shipLossSnapshot = static function (array $ships, float $lossRatio, bool $isNpc): array {
-            return array_map(fn ($s) => [
-                'name' => $isNpc ? 'NPC-Verteidigung' : $s['type']['name'],
-                'quantityBefore' => $s['quantity'],
-                'quantityLost' => $s['quantity'] - (int) floor($s['quantity'] * (1 - $lossRatio)),
-            ], $ships);
+        // Verlust-Schnappschuss pro Schiffstyp fuers Kampfbericht-Frontend - dieselbe Rechnung
+        // (inkl. npcProtectedSurvivors()) wie applyLossRatio()/applyLossRatioToFleet(), damit die
+        // im Bericht gezeigten Stueckzahlen exakt zu dem passen, was tatsaechlich von der
+        // Flotte/Basis abgezogen wurde (keine separate, potenziell abweichende Rundung).
+        $shipLossSnapshot = function (array $ships, float $lossRatio, bool $isNpc, bool $protectAgainstNpc): array {
+            return array_map(function ($s) use ($lossRatio, $isNpc, $protectAgainstNpc) {
+                $quantityBefore = $s['quantity'];
+                $survivors = (int) floor($quantityBefore * (1 - $lossRatio));
+                if ($protectAgainstNpc) {
+                    $survivors = $this->npcProtectedSurvivors($s['type']['name'], $quantityBefore, $survivors);
+                }
+
+                return [
+                    'name' => $isNpc ? 'NPC-Verteidigung' : $s['type']['name'],
+                    'quantityBefore' => $quantityBefore,
+                    'quantityLost' => $quantityBefore - $survivors,
+                ];
+            }, $ships);
         };
         $reportData = [
             'rounds' => $combat['rounds'],
             'attacker' => [
                 'lossRatio' => $combat['attackerLossRatio'],
-                'ships' => $shipLossSnapshot($attackerShips, $combat['attackerLossRatio'], false),
+                'ships' => $shipLossSnapshot($attackerShips, $combat['attackerLossRatio'], false, $isNpcDefender),
             ],
             'defender' => [
                 'lossRatio' => $combat['defenderLossRatio'],
-                'isNpc' => $targetBase === false,
-                'ships' => $shipLossSnapshot($defenderShips, $combat['defenderLossRatio'], $targetBase === false),
+                'isNpc' => $isNpcDefender,
+                'ships' => $shipLossSnapshot($defenderShips, $combat['defenderLossRatio'], $isNpcDefender, false),
             ],
         ];
 
@@ -473,18 +482,45 @@ final class GameEngine
         }
     }
 
-    private function applyLossRatioToFleet(int $fleetId, float $lossRatio): void
+    private function applyLossRatioToFleet(int $fleetId, float $lossRatio, bool $isNpcDefender): void
     {
         if ($lossRatio <= 0.0) {
             return;
         }
-        $stmt = $this->pdo->prepare('SELECT ship_type_id, quantity FROM fleet_ships WHERE fleet_id = ? FOR UPDATE');
+        $stmt = $this->pdo->prepare(
+            'SELECT fs.ship_type_id, fs.quantity, st.name FROM fleet_ships fs
+             JOIN ship_types st ON st.id = fs.ship_type_id
+             WHERE fs.fleet_id = ? FOR UPDATE'
+        );
         $stmt->execute([$fleetId]);
         foreach ($stmt->fetchAll() as $row) {
-            $newQty = (int) floor((int) $row['quantity'] * (1 - $lossRatio));
+            $quantityBefore = (int) $row['quantity'];
+            $newQty = (int) floor($quantityBefore * (1 - $lossRatio));
+            if ($isNpcDefender) {
+                $newQty = $this->npcProtectedSurvivors($row['name'], $quantityBefore, $newQty);
+            }
             $this->pdo->prepare('UPDATE fleet_ships SET quantity = ? WHERE fleet_id = ? AND ship_type_id = ?')
                 ->execute([$newQty, $fleetId, $row['ship_type_id']]);
         }
+    }
+
+    /**
+     * Spielerfreundliche Ausnahme NUR gegen NPCs (nie PvP): floor(qty * (1-ratio)) kann eine
+     * Ein-Schiff-Flotte bei JEDER Verlustquote > 0 komplett ausloeschen (floor(1*0.9)=0) - das hat
+     * genau einen Kreuzer+Abfangjaeger+Transporter bei ~10% Verlustquote alle drei gleichzeitig
+     * gekostet (Nutzer-Rueckmeldung). Kreuzer gehen gegen NPCs nie verloren, jeder andere Typ
+     * behaelt mindestens ein Schiff, wenn mindestens eins losgeschickt wurde.
+     */
+    private function npcProtectedSurvivors(string $shipName, int $quantityBefore, int $normalSurvivors): int
+    {
+        if ($quantityBefore <= 0) {
+            return $normalSurvivors;
+        }
+        if ($shipName === 'Kreuzer') {
+            return $quantityBefore;
+        }
+
+        return max($normalSurvivors, 1);
     }
 
     private function travelSeconds(array $fleet): int

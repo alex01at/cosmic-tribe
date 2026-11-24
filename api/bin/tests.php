@@ -310,6 +310,72 @@ check(
     "Zweite Plünderung direkt danach bringt spürbar weniger Beute ({$report2['loot_titan']} < {$report1['loot_titan']}) - Außenposten hat sich noch nicht erholt"
 );
 
+// --- Test 7b: gegen NPCs geht ein Kreuzer nie verloren, jeder andere Typ behält mindestens 1 ---
+echo "Test: NPC-Kämpfe zerstören nie einen Kreuzer, andere Typen behalten mindestens 1 Überlebenden\n";
+$npcRows = $pdo->query('SELECT id, sector_id, position FROM npc_outposts LIMIT 2 OFFSET 1')->fetchAll();
+[$npcA, $npcB] = $npcRows;
+$pdo->prepare('UPDATE npc_outposts SET last_raided_at = NULL, defense_strength = 3000 WHERE id IN (?, ?)')
+    ->execute([$npcA['id'], $npcB['id']]);
+
+$p9b = registerPlayer($pdo, $createdDeviceIds, 'test-npc-protect-a');
+giveShips($pdo, $p9b['baseId'], 3, 1); // 1 Kreuzer, chancenlos gegen defense_strength=3000
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$p9b['baseId']]);
+$cruiserAttack = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $p9b['baseId'], 'ships' => [3 => 1],
+    'targetSectorId' => $npcA['sector_id'], 'targetPosition' => $npcA['position'],
+    'mission' => 'attack', 'energyPreset' => 'weapons',
+], $p9b['token']);
+check($cruiserAttack['status'] === 200, 'Angriff eines einzelnen Kreuzers auf starken NPC wird angenommen');
+$pdo->prepare('UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?')->execute([$cruiserAttack['body']['fleetId']]);
+apiCall('GET', '/api/state', null, $p9b['token']);
+$cruiserReport = $pdo->query(
+    "SELECT * FROM combat_reports WHERE attacker_player_id = {$p9b['playerId']} ORDER BY id DESC LIMIT 1"
+)->fetch();
+check($cruiserReport['outcome'] === 'defender_win', 'Kreuzer unterliegt dem starken NPC (erwartete Niederlage), Ergebnis: ' . $cruiserReport['outcome']);
+$cruiserQtyAfter = (int) $pdo->query("SELECT quantity FROM fleet_ships WHERE fleet_id = {$cruiserAttack['body']['fleetId']} AND ship_type_id = 3")->fetchColumn();
+check($cruiserQtyAfter === 1, "Kreuzer überlebt den Kampf gegen den NPC trotz Niederlage (Bestand: {$cruiserQtyAfter})");
+$cruiserReportShips = json_decode($cruiserReport['report_json'], true)['attacker']['ships'];
+check(
+    $cruiserReportShips[0]['quantityLost'] === 0,
+    "Kampfbericht zeigt 0 Kreuzer-Verlust, passend zum tatsächlichen Bestand (Bericht: {$cruiserReportShips[0]['quantityLost']})"
+);
+
+$p9c = registerPlayer($pdo, $createdDeviceIds, 'test-npc-protect-b');
+giveShips($pdo, $p9c['baseId'], 2, 2); // 2 Abfangjäger
+giveShips($pdo, $p9c['baseId'], 4, 1); // 1 Transporter
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$p9c['baseId']]);
+$mixedAttack = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $p9c['baseId'], 'ships' => [2 => 2, 4 => 1],
+    'targetSectorId' => $npcB['sector_id'], 'targetPosition' => $npcB['position'],
+    'mission' => 'attack', 'energyPreset' => 'weapons',
+], $p9c['token']);
+check($mixedAttack['status'] === 200, 'Gemischter Angriff (2 Abfangjäger + 1 Transporter) auf starken NPC wird angenommen');
+$pdo->prepare('UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?')->execute([$mixedAttack['body']['fleetId']]);
+apiCall('GET', '/api/state', null, $p9c['token']);
+$fighterQtyAfter = (int) $pdo->query("SELECT quantity FROM fleet_ships WHERE fleet_id = {$mixedAttack['body']['fleetId']} AND ship_type_id = 2")->fetchColumn();
+$transporterQtyAfter = (int) $pdo->query("SELECT quantity FROM fleet_ships WHERE fleet_id = {$mixedAttack['body']['fleetId']} AND ship_type_id = 4")->fetchColumn();
+check($fighterQtyAfter >= 1, "Mindestens ein Abfangjäger überlebt (Bestand: {$fighterQtyAfter})");
+check($transporterQtyAfter >= 1, "Der Transporter überlebt (Bestand: {$transporterQtyAfter})");
+
+// --- Test 7c: dieselbe Schutzregel gilt NICHT im Spieler-gegen-Spieler-Kampf ---
+echo "Test: Schutz vor Totalverlust gilt nur gegen NPCs, nicht im PvP\n";
+$p9d = registerPlayer($pdo, $createdDeviceIds, 'test-pvp-no-protect');
+$p9e = registerPlayer($pdo, $createdDeviceIds, 'test-pvp-defender');
+$pdo->prepare('UPDATE bases SET protected_until = NULL WHERE id = ?')->execute([$p9e['baseId']]);
+giveShips($pdo, $p9e['baseId'], 3, 50); // starke Verteidigung: 50 Kreuzer
+giveShips($pdo, $p9d['baseId'], 3, 1); // 1 chancenloser Kreuzer
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$p9d['baseId']]);
+$pvpAttack = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $p9d['baseId'], 'ships' => [3 => 1],
+    'targetSectorId' => $p9e['sectorId'], 'targetPosition' => $p9e['position'],
+    'mission' => 'attack', 'energyPreset' => 'weapons',
+], $p9d['token']);
+check($pvpAttack['status'] === 200, 'PvP-Angriff eines einzelnen Kreuzers wird angenommen');
+$pdo->prepare('UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?')->execute([$pvpAttack['body']['fleetId']]);
+apiCall('GET', '/api/state', null, $p9d['token']);
+$pvpCruiserQty = (int) $pdo->query("SELECT quantity FROM fleet_ships WHERE fleet_id = {$pvpAttack['body']['fleetId']} AND ship_type_id = 3")->fetchColumn();
+check($pvpCruiserQty === 0, "Im PvP greift die NPC-Schutzregel NICHT - Kreuzer geht wie gehabt verloren (Bestand: {$pvpCruiserQty})");
+
 // --- Test 8: zwei Kolonieschiffe auf denselben freien Slot - genau eines gewinnt ---
 echo "Test: zwei gleichzeitig ankommende Kolonieschiffe auf demselben Slot - genau eines gewinnt\n";
 $freeSectorStmt = $pdo->query(
