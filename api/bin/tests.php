@@ -163,6 +163,146 @@ check(
 $cruiserLocked = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3b['baseId'], 'shipTypeId' => 3, 'quantity' => 1], $p3b['token']);
 check($cruiserLocked['status'] === 422, 'Kreuzer ohne ausreichendes Werft-Level wird abgelehnt (422), Status: ' . $cruiserLocked['status']);
 
+// --- Test 3c: bezahlte Parallel-Baustelle (Gebäude) - zweiter Typ startet sofort, zieht beim
+// Fertigwerden NIE aus der kostenlosen Warteschlange nach ---
+echo "Test: bezahlte parallele Gebäude-Baustelle startet sofort und bleibt von der kostenlosen Warteschlange getrennt\n";
+$p3c = registerPlayer($pdo, $createdDeviceIds, 'test-parallel-build');
+$pdo->prepare('UPDATE bases SET titan = 100000, deuterium = 100000, credits = 100000 WHERE id = ?')->execute([$p3c['baseId']]);
+$parallelRate = (float) $pdo->query('SELECT u.parallel_build_rate FROM universes u JOIN players p ON p.universe_id = u.id WHERE p.id = ' . $p3c['playerId'])->fetchColumn();
+$gameSpeed = (float) $pdo->query('SELECT u.game_speed FROM universes u JOIN players p ON p.universe_id = u.id WHERE p.id = ' . $p3c['playerId'])->fetchColumn();
+
+// Lane 1 (kostenlos): Titan-Raffinerie (Typ 2) auf Level 1.
+$lane1Build = apiCall('POST', '/api/base/build', ['baseId' => $p3c['baseId'], 'buildingTypeId' => 2], $p3c['token']);
+check($lane1Build['status'] === 200, 'Erste (kostenlose) Baustelle wird angenommen');
+$creditsAfterLane1 = $lane1Build['body']['credits'];
+// Universum 1 läuft aktuell mit sehr hoher game_speed - ohne das hier würde Lane 1 schon durch
+// die paar folgenden API-Aufrufe (reale Sekunden) von selbst fertig werden und die unten
+// geprüfte "Lane 1 läuft noch" / "genau 2 gleichzeitige Baustellen"-Erwartung flaky machen.
+$pdo->prepare('UPDATE base_buildings SET finishes_at = UTC_TIMESTAMP() + INTERVAL 1 HOUR WHERE base_id = ? AND building_type_id = 2')
+    ->execute([$p3c['baseId']]);
+
+// Versuch, waehrend Lane 1 noch laeuft, denselben Nicht-HQ-Typ NICHT parallel anzufangen - nur
+// zur Kontrolle, dass Typ 2 jetzt als "aktiv" gilt (wird unten mit Typ 3 fortgesetzt).
+$dupParallel = apiCall('POST', '/api/base/build', ['baseId' => $p3c['baseId'], 'buildingTypeId' => 2, 'payForParallel' => true], $p3c['token']);
+check($dupParallel['status'] === 422, 'Derselbe Gebäudetyp kann nicht ein zweites Mal (auch nicht bezahlt) parallel gestartet werden, Status: ' . $dupParallel['status']);
+
+// Lane 2 (bezahlt): Deuterium-Sammler (Typ 3), waehrend Lane 1 noch laeuft.
+$deuteriumBuildSeconds = max(1, (int) round(600 / $gameSpeed));
+$expectedParallelCost = max(1, (int) ceil($deuteriumBuildSeconds * $parallelRate));
+$parallelBuild = apiCall('POST', '/api/base/build', ['baseId' => $p3c['baseId'], 'buildingTypeId' => 3, 'payForParallel' => true], $p3c['token']);
+check($parallelBuild['status'] === 200, 'Bezahlte parallele Baustelle (anderer Typ) wird angenommen, während Lane 1 noch läuft');
+check(
+    $parallelBuild['body']['credits'] === $creditsAfterLane1 - $expectedParallelCost,
+    "Parallel-Gebühr ({$expectedParallelCost} Credits, skaliert mit Bauzeit) wird zusätzlich zu den normalen Baukosten abgebucht"
+);
+
+$bothBuilding = $pdo->query("SELECT building_type_id, paid_parallel FROM base_buildings WHERE base_id = {$p3c['baseId']} AND status = 'building' ORDER BY building_type_id")->fetchAll();
+check(count($bothBuilding) === 2, 'Beide Baustellen (Lane 1 + bezahlte Lane 2) laufen gleichzeitig (status=building)');
+check((int) $bothBuilding[1]['paid_parallel'] === 1, 'Die zweite Baustelle ist als bezahlte Parallel-Lane markiert');
+
+// Nicht genug Credits für eine WEITERE parallele Baustelle (Hangar, Typ 7).
+$pdo->prepare('UPDATE bases SET credits = 0 WHERE id = ?')->execute([$p3c['baseId']]);
+$noCredits = apiCall('POST', '/api/base/build', ['baseId' => $p3c['baseId'], 'buildingTypeId' => 7, 'payForParallel' => true], $p3c['token']);
+check($noCredits['status'] === 422, 'Parallele Baustelle ohne ausreichende Credits wird abgelehnt (422), Status: ' . $noCredits['status']);
+$pdo->prepare('UPDATE bases SET credits = 100000 WHERE id = ?')->execute([$p3c['baseId']]);
+
+// Ein dritter, KOSTENLOSER Auftrag (Hangar) muss waehrend Lane 1 noch belegt ist in die
+// Warteschlange wandern, nicht etwa in eine dritte Parallel-Lane.
+$freeQueued = apiCall('POST', '/api/base/build', ['baseId' => $p3c['baseId'], 'buildingTypeId' => 7], $p3c['token']);
+check($freeQueued['status'] === 200 && count($freeQueued['body']['buildQueue'] ?? []) === 1, 'Dritter (kostenloser) Auftrag wandert in die Warteschlange, nicht in eine weitere Lane');
+
+// Nur Lane 2 (Deuterium-Sammler) fertigstellen - Lane 1 und die Warteschlange duerfen davon
+// UNBERUEHRT bleiben.
+$pdo->prepare("UPDATE base_buildings SET finishes_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE base_id = ? AND building_type_id = 3")
+    ->execute([$p3c['baseId']]);
+$afterLane2 = apiCall('GET', '/api/state', null, $p3c['token'])['body']['bases'][0];
+$buildingsById = [];
+foreach ($afterLane2['buildings'] as $b) {
+    $buildingsById[$b['id']] = $b;
+}
+check($buildingsById[3]['level'] === 1 && $buildingsById[3]['status'] === 'idle', 'Lane 2 (Deuterium-Sammler) ist fertig und wieder idle');
+check($buildingsById[2]['status'] === 'building', 'Lane 1 (Titan-Raffinerie) läuft unverändert weiter');
+check(count($afterLane2['buildQueue']) === 1, 'Die kostenlose Warteschlange (Hangar) ist unangetastet - Lane 2 hat NICHT aus ihr nachgezogen');
+
+// Jetzt Lane 1 fertigstellen - DANACH muss der wartende Hangar-Auftrag aus der Warteschlange
+// automatisch die (jetzt wieder freie) Lane 1 uebernehmen, exakt wie vor dieser Änderung.
+$pdo->prepare("UPDATE base_buildings SET finishes_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE base_id = ? AND building_type_id = 2")
+    ->execute([$p3c['baseId']]);
+$afterLane1 = apiCall('GET', '/api/state', null, $p3c['token'])['body']['bases'][0];
+$buildingsById2 = [];
+foreach ($afterLane1['buildings'] as $b) {
+    $buildingsById2[$b['id']] = $b;
+}
+check($buildingsById2[2]['level'] === 1 && $buildingsById2[2]['status'] === 'idle', 'Lane 1 (Titan-Raffinerie) ist fertig');
+// Bei der aktuellen (sehr hohen) game_speed des Test-Universums ist die Bauzeit so kurz, dass
+// der nachgezogene Hangar-Auftrag oft schon im selben advanceBaseTo()-Lauf komplett fertig wird,
+// statt nur "building" zu sein - das ist korrekt (dieselbe Verkettung wie bei Schiffen), daher
+// hier nur pruefen, dass er ueberhaupt nachgezogen (Level erreicht) wurde, nicht einen exakten
+// Zwischenzustand.
+check($buildingsById2[7]['level'] === 1, 'Der wartende Hangar-Auftrag übernimmt automatisch die freigewordene Lane 1 und wird fertiggestellt');
+check(count($afterLane1['buildQueue']) === 0, 'Die kostenlose Warteschlange ist jetzt leer');
+
+// --- Test 3d: bezahlte Parallel-Lane bei Schiffen + Fix für verlorene Offline-Zeit zwischen
+// zwei aufeinanderfolgenden Werft-Auftraegen ---
+echo "Test: bezahlte parallele Werft-Lane bei Schiffen, und Offline-Zeit zwischen zwei Aufträgen geht nicht mehr verloren\n";
+$p3d = registerPlayer($pdo, $createdDeviceIds, 'test-parallel-ship');
+$pdo->prepare('UPDATE bases SET titan = 100000, deuterium = 100000, credits = 100000 WHERE id = ?')->execute([$p3d['baseId']]);
+apiCall('POST', '/api/base/build', ['baseId' => $p3d['baseId'], 'buildingTypeId' => 4], $p3d['token']); // Werft
+$pdo->prepare("UPDATE base_buildings SET finishes_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE base_id = ? AND building_type_id = 4")
+    ->execute([$p3d['baseId']]);
+apiCall('GET', '/api/state', null, $p3d['token']);
+
+$lane1Ship = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3d['baseId'], 'shipTypeId' => 1, 'quantity' => 1], $p3d['token']);
+check($lane1Ship['status'] === 200, 'Erster (kostenloser) Werft-Auftrag (Scout) wird angenommen');
+// Dieselbe Vorsichtsmaßnahme wie beim Gebäude-Test: Lane 1 bei sehr hoher game_speed nicht von
+// selbst fertig werden lassen, bevor unten explizit geprüft wird, dass NUR die bezahlte Lane
+// fertig ist.
+$pdo->prepare('UPDATE base_ship_queue SET finishes_at = UTC_TIMESTAMP() + INTERVAL 1 HOUR WHERE base_id = ? AND paid_parallel = 0')
+    ->execute([$p3d['baseId']]);
+
+$scoutBuildSeconds = max(1, (int) round(300 / $gameSpeed));
+$expectedShipParallelCost = max(1, (int) ceil($scoutBuildSeconds * $parallelRate));
+$creditsBeforeParallelShip = $lane1Ship['body']['credits'];
+$parallelShip = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3d['baseId'], 'shipTypeId' => 1, 'quantity' => 1, 'payForParallel' => true], $p3d['token']);
+check($parallelShip['status'] === 200, 'Bezahlter paralleler Werft-Auftrag (zweiter Scout) wird angenommen');
+check(
+    $parallelShip['body']['credits'] === $creditsBeforeParallelShip - $expectedShipParallelCost,
+    "Parallel-Gebühr ({$expectedShipParallelCost} Credits) für die Werft-Lane wird zusätzlich abgebucht"
+);
+
+$shipQueueRows = $pdo->query("SELECT ship_type_id, paid_parallel, started_at FROM base_ship_queue WHERE base_id = {$p3d['baseId']} ORDER BY id")->fetchAll();
+check(count($shipQueueRows) === 2, 'Zwei unabhängige Werft-Aufträge stehen in der Tabelle (Lane 1 + bezahlte Lane)');
+check((int) $shipQueueRows[1]['paid_parallel'] === 1 && $shipQueueRows[1]['started_at'] !== null, 'Die bezahlte Lane ist sofort gestartet (started_at gesetzt)');
+
+// Nur die bezahlte Lane fertigstellen - Lane 1 bleibt unberuehrt.
+$pdo->prepare('UPDATE base_ship_queue SET finishes_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE base_id = ? AND paid_parallel = 1')
+    ->execute([$p3d['baseId']]);
+apiCall('GET', '/api/state', null, $p3d['token']);
+$shipQueueAfter = $pdo->query("SELECT ship_type_id, paid_parallel FROM base_ship_queue WHERE base_id = {$p3d['baseId']}")->fetchAll();
+check(count($shipQueueAfter) === 1 && (int) $shipQueueAfter[0]['paid_parallel'] === 0, 'Nach Fertigstellung bleibt nur noch Lane 1 übrig, die bezahlte Lane zieht NICHTS nach');
+$scoutQtyAfterParallel = (int) $pdo->query("SELECT quantity FROM base_ships WHERE base_id = {$p3d['baseId']} AND ship_type_id = 1")->fetchColumn();
+check($scoutQtyAfterParallel === 1, 'Der parallel gebaute Scout ist im Hangar (Lane 1 ist noch nicht fertig)');
+
+// Jetzt der eigentliche Fix: zwei FREIE Lane-1-Auftraege (A laeuft noch, B wartet schon mit
+// started_at=NULL in der FIFO) duerfen beim Uebergang keine virtuelle Zeit verlieren. WICHTIG:
+// B muss eingereiht werden, SOLANGE A noch als "in Zukunft fertig" gilt (sonst wuerde
+// queueShip()s eigener advanceBaseTo()-Aufruf VOR dem Einreihen A schon beenden, und B stuende
+// als einziger Auftrag ganz regulaer bei "jetzt" - kein Vergleichsfall fuer den Fix).
+$orderB = apiCall('POST', '/api/base/ships/build', ['baseId' => $p3d['baseId'], 'shipTypeId' => 1, 'quantity' => 1], $p3d['token']);
+check($orderB['status'] === 200, 'Zweiter kostenloser Auftrag (Scout B) wird angenommen, während A noch läuft');
+check(count($orderB['body']['shipQueue']) === 2, 'Scout B wartet (started_at=NULL) hinter dem noch laufenden Scout A in derselben Lane');
+
+// Jetzt ERST Auftrag A weit in die Vergangenheit vorspulen und mit EINEM einzigen state()-Aufruf
+// (= einer einzigen advanceShipQueue()-Auswertung) beide Aufträge nachholen lassen. Mit dem alten
+// Bug (Nachfolger startet immer bei "echt jetzt" statt beim virtuellen Fertigstellungszeitpunkt
+// des Vorgängers) wäre B hier nach diesem einen Aufruf noch nicht fertig.
+$pdo->prepare('UPDATE base_ship_queue SET started_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR, finishes_at = UTC_TIMESTAMP() - INTERVAL 59 MINUTE WHERE base_id = ? AND paid_parallel = 0 ORDER BY id ASC LIMIT 1')
+    ->execute([$p3d['baseId']]);
+$afterChain = apiCall('GET', '/api/state', null, $p3d['token'])['body']['bases'][0];
+check($afterChain['shipQueue'] === [], 'Beide Aufträge (A und B) sind nach einem einzigen Abruf fertig - keine Offline-Zeit zwischen ihnen verloren');
+$scoutQtyFinal = (int) $pdo->query("SELECT quantity FROM base_ships WHERE base_id = {$p3d['baseId']} AND ship_type_id = 1")->fetchColumn();
+check($scoutQtyFinal === 3, "Insgesamt 3 Scouts im Hangar (1 parallel + 2 aus der Kette A+B), sind {$scoutQtyFinal}");
+
 // --- Vorbereitung für Flotten-/Kampf-Tests: Testspieler bekommen Schiffe direkt in den Hangar ---
 // (einfacher als jedes Mal eine Werft hochzuziehen und die Bauzeit zu überspringen)
 function giveShips(PDO $pdo, int $baseId, int $shipTypeId, int $quantity): void

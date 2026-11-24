@@ -13,14 +13,22 @@ final class AdminEngine
     {
     }
 
-    /** Geschwindigkeit des Universums, in dem ein Spieler steckt - ersetzt die frühere globale game_speed. */
-    public function getUniverseGameSpeed(int $universeId): float
+    /**
+     * Pro-Request-Einstellungen des Universums, in dem ein Spieler steckt - ersetzt die frühere
+     * globale game_speed. Beide Werte kommen aus derselben Zeile, daher eine gemeinsame Methode
+     * statt zwei Einzel-Queries pro Request.
+     */
+    public function getUniverseSettings(int $universeId): array
     {
-        $stmt = $this->pdo->prepare('SELECT game_speed FROM universes WHERE id = ?');
+        $stmt = $this->pdo->prepare('SELECT game_speed, parallel_build_rate FROM universes WHERE id = ?');
         $stmt->execute([$universeId]);
-        $value = $stmt->fetchColumn();
+        $row = $stmt->fetch();
 
-        return $value !== false ? (float) $value : (float) $this->defaultConfig['app']['game_speed'];
+        if ($row === false) {
+            return ['gameSpeed' => (float) $this->defaultConfig['app']['game_speed'], 'parallelBuildRate' => 0.0];
+        }
+
+        return ['gameSpeed' => (float) $row['game_speed'], 'parallelBuildRate' => (float) $row['parallel_build_rate']];
     }
 
     // --- Universen -------------------------------------------------------
@@ -39,12 +47,13 @@ final class AdminEngine
             'maxPlayers' => (int) $u['max_players'],
             'galaxySize' => (int) $u['galaxy_size'],
             'gameSpeed' => (float) $u['game_speed'],
+            'parallelBuildRate' => (float) $u['parallel_build_rate'],
             'playerCount' => (int) $u['player_count'],
             'createdAt' => $u['created_at'],
         ], $rows);
     }
 
-    public function createUniverse(string $name, int $maxPlayers, int $galaxySize, float $gameSpeed): array
+    public function createUniverse(string $name, int $maxPlayers, int $galaxySize, float $gameSpeed, float $parallelBuildRate): array
     {
         $name = trim($name);
         if ($name === '' || mb_strlen($name) > 60) {
@@ -59,12 +68,15 @@ final class AdminEngine
         if ($gameSpeed <= 0 || $gameSpeed > 1000) {
             Response::error('Geschwindigkeit muss zwischen 0 und 1000 liegen', 422);
         }
+        if ($parallelBuildRate < 0 || $parallelBuildRate > 1000) {
+            Response::error('Parallel-Baukosten-Rate muss zwischen 0 und 1000 liegen', 422);
+        }
 
         $this->pdo->beginTransaction();
         try {
             $this->pdo->prepare(
-                'INSERT INTO universes (name, max_players, galaxy_size, game_speed) VALUES (?, ?, ?, ?)'
-            )->execute([$name, $maxPlayers, $galaxySize, $gameSpeed]);
+                'INSERT INTO universes (name, max_players, galaxy_size, game_speed, parallel_build_rate) VALUES (?, ?, ?, ?, ?)'
+            )->execute([$name, $maxPlayers, $galaxySize, $gameSpeed, $parallelBuildRate]);
             $universeId = (int) $this->pdo->lastInsertId();
 
             GalaxyGenerator::generate($this->pdo, $universeId, $galaxySize);
@@ -94,6 +106,10 @@ final class AdminEngine
         if ($gameSpeed <= 0 || $gameSpeed > 1000) {
             Response::error('Geschwindigkeit muss zwischen 0 und 1000 liegen', 422);
         }
+        $parallelBuildRate = (float) ($fields['parallelBuildRate'] ?? 0);
+        if ($parallelBuildRate < 0 || $parallelBuildRate > 1000) {
+            Response::error('Parallel-Baukosten-Rate muss zwischen 0 und 1000 liegen', 422);
+        }
         $name = trim((string) ($fields['name'] ?? ''));
         if ($name === '' || mb_strlen($name) > 60) {
             Response::error('Name muss 1-60 Zeichen haben', 422);
@@ -106,8 +122,8 @@ final class AdminEngine
         }
 
         $this->pdo->prepare(
-            'UPDATE universes SET name = ?, status = ?, max_players = ?, game_speed = ? WHERE id = ?'
-        )->execute([$name, $status, $maxPlayers, $gameSpeed, $id]);
+            'UPDATE universes SET name = ?, status = ?, max_players = ?, game_speed = ?, parallel_build_rate = ? WHERE id = ?'
+        )->execute([$name, $status, $maxPlayers, $gameSpeed, $parallelBuildRate, $id]);
 
         return $this->listUniverses();
     }

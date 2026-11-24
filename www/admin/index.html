@@ -47,8 +47,13 @@
         <div class="field-row">
           <label>Geschwindigkeit</label>
           <input id="new-universe-game-speed" type="number" min="0.1" step="0.1" value="1">
+        </div>
+        <div class="field-row">
+          <label>Parallel-Rate</label>
+          <input id="new-universe-parallel-rate" type="number" min="0" step="0.01" value="0.5">
           <button class="btn primary" id="create-universe-btn">Anlegen</button>
         </div>
+        <p class="hint">Parallel-Rate: Credits pro (durch die Geschwindigkeit bereits verkürzter) Sekunde Bauzeit, die ein Spieler bezahlt, um eine zweite Baustelle/Werft-Bestellung eines anderen Typs sofort statt kostenlos nacheinander zu starten.</p>
         <div id="create-universe-status" class="status-text"></div>
       </div>
       <div class="panel">

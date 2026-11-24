@@ -100,6 +100,7 @@ const AdminApp = (() => {
                 <td>${u.galaxySize}x${u.galaxySize}</td>
                 <td><input type="number" class="f-max-players" value="${u.maxPlayers}" min="1"></td>
                 <td><input type="number" class="f-game-speed" value="${u.gameSpeed}" min="0.1" step="0.1"></td>
+                <td><input type="number" class="f-parallel-rate" value="${u.parallelBuildRate}" min="0" step="0.01"></td>
                 <td>
                     <select class="f-status">
                         <option value="open" ${u.status === 'open' ? 'selected' : ''}>offen</option>
@@ -112,7 +113,7 @@ const AdminApp = (() => {
         $('universes-table').innerHTML = `
             <table class="admin-table">
                 <thead><tr>
-                    <th>Name</th><th>Spieler</th><th>Raster</th><th>Max. Spieler</th><th>Geschwindigkeit</th><th>Status</th><th></th>
+                    <th>Name</th><th>Spieler</th><th>Raster</th><th>Max. Spieler</th><th>Geschwindigkeit</th><th>Parallel-Rate</th><th>Status</th><th></th>
                 </tr></thead>
                 <tbody>${rows}</tbody>
             </table>`;
@@ -128,6 +129,7 @@ const AdminApp = (() => {
                         name: universe.name,
                         maxPlayers: parseInt(tr.querySelector('.f-max-players').value, 10),
                         gameSpeed: parseFloat(tr.querySelector('.f-game-speed').value),
+                        parallelBuildRate: parseFloat(tr.querySelector('.f-parallel-rate').value),
                         status: tr.querySelector('.f-status').value,
                     });
                     showToast('Gespeichert.');
@@ -154,6 +156,7 @@ const AdminApp = (() => {
                 maxPlayers: parseInt($('new-universe-max-players').value, 10),
                 galaxySize: parseInt($('new-universe-galaxy-size').value, 10),
                 gameSpeed: parseFloat($('new-universe-game-speed').value),
+                parallelBuildRate: parseFloat($('new-universe-parallel-rate').value),
             }).then(r => r.universes);
             renderUniverses();
             renderUniverseFilter();

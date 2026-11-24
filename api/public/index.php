@@ -36,9 +36,9 @@ $router = new Router();
 // SEINES Universums bauen - jedes Universum kann eine eigene Geschwindigkeit haben.
 $requirePlayerEngine = function (PDO $pdo, AdminEngine $adminEngine): array {
     $player = Auth::requirePlayer($pdo);
-    $gameSpeed = $adminEngine->getUniverseGameSpeed((int) $player['universe_id']);
+    $settings = $adminEngine->getUniverseSettings((int) $player['universe_id']);
 
-    return [$player, new GameEngine($pdo, $gameSpeed)];
+    return [$player, new GameEngine($pdo, $settings['gameSpeed'], $settings['parallelBuildRate'])];
 };
 
 $router->post('/api/register', function (array $body) use ($pdo) {
@@ -61,7 +61,8 @@ $router->post('/api/base/build', function (array $body) use ($pdo, $adminEngine,
     [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $baseId = (int) ($body['baseId'] ?? 0);
     $buildingTypeId = (int) ($body['buildingTypeId'] ?? 0);
-    Response::json($engine->queueBuilding((int) $player['id'], $baseId, $buildingTypeId));
+    $payForParallel = (bool) ($body['payForParallel'] ?? false);
+    Response::json($engine->queueBuilding((int) $player['id'], $baseId, $buildingTypeId, $payForParallel));
 });
 
 $router->post('/api/base/cancel', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
@@ -75,7 +76,8 @@ $router->post('/api/base/ships/build', function (array $body) use ($pdo, $adminE
     $baseId = (int) ($body['baseId'] ?? 0);
     $shipTypeId = (int) ($body['shipTypeId'] ?? 0);
     $quantity = (int) ($body['quantity'] ?? 0);
-    Response::json($engine->queueShip((int) $player['id'], $baseId, $shipTypeId, $quantity));
+    $payForParallel = (bool) ($body['payForParallel'] ?? false);
+    Response::json($engine->queueShip((int) $player['id'], $baseId, $shipTypeId, $quantity, $payForParallel));
 });
 
 $router->post('/api/base/ships/cancel', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
@@ -164,7 +166,8 @@ $router->post('/api/admin/universes/create', function (array $body) use ($pdo, $
         (string) ($body['name'] ?? ''),
         (int) ($body['maxPlayers'] ?? 0),
         (int) ($body['galaxySize'] ?? 0),
-        (float) ($body['gameSpeed'] ?? 0)
+        (float) ($body['gameSpeed'] ?? 0),
+        (float) ($body['parallelBuildRate'] ?? 0)
     )]);
 });
 

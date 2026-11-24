@@ -21,8 +21,19 @@ final class GameEngine
     private const TRAVEL_SECONDS_PER_DISTANCE_AT_SPEED_100 = 600; // vor game_speed-Skalierung, Platzhalter
     private const DEUTERIUM_FUEL_PER_SHIP_PER_DISTANCE = 2;
 
-    public function __construct(private PDO $pdo, private float $gameSpeed)
+    public function __construct(private PDO $pdo, private float $gameSpeed, private float $parallelBuildRate = 0.0)
     {
+    }
+
+    /**
+     * Preis, um eine zweite (dritte, ...) Baustelle/Werft-Bestellung eines ANDEREN Typs sofort
+     * parallel zu starten, statt kostenlos in der FIFO-Warteschlange zu warten - skaliert mit der
+     * (schon game_speed-skalierten) Bauzeit, die damit übersprungen wird. Betreiber-einstellbar
+     * pro Universum (siehe AdminEngine), deshalb kein Klassen-Constant.
+     */
+    private function parallelBuildCost(int $totalScaledSeconds): int
+    {
+        return max(1, (int) ceil($totalScaledSeconds * $this->parallelBuildRate));
     }
 
     private function scaledSeconds(int $baseSeconds): int
@@ -566,12 +577,18 @@ final class GameEngine
             // Pro-Abschnitt-Abrechnung in der Schleife vermeiden soll). Settlement passiert NUR
             // hier drin (pro abgeschlossenem Level) und einmal ganz am Ende für den Rest-Zeitraum.
             while (true) {
+                // NUR bereits FAELLIGE Baustellen holen (finishes_at <= asOf), nicht irgendeine
+                // - seit bezahlte Parallel-Baustellen existieren, kann es mehrere gleichzeitig
+                // 'building' Zeilen geben; ein einfaches fetch() der ERSTEN davon könnte eine noch
+                // nicht fällige Zeile erwischen und die Schleife faelschlich fuer alle verlassen,
+                // obwohl eine ANDERE (parallele) Zeile faellig waere (Advisor-Review-Fund).
                 $stmt = $this->pdo->prepare(
                     "SELECT bb.*, bt.effect FROM base_buildings bb
                      JOIN building_types bt ON bt.id = bb.building_type_id
-                     WHERE bb.base_id = ? AND bb.status = 'building' FOR UPDATE"
+                     WHERE bb.base_id = ? AND bb.status = 'building' AND bb.finishes_at <= ?
+                     ORDER BY bb.finishes_at ASC LIMIT 1 FOR UPDATE"
                 );
-                $stmt->execute([$baseId]);
+                $stmt->execute([$baseId, $asOf->format('Y-m-d H:i:s')]);
                 $active = $stmt->fetch();
 
                 if ($active === false) {
@@ -579,9 +596,6 @@ final class GameEngine
                 }
 
                 $finishesAt = new DateTimeImmutable($active['finishes_at']);
-                if ($finishesAt > $asOf) {
-                    break;
-                }
 
                 // Produktion bis GENAU zum alten Fertigstellungszeitpunkt abrechnen, BEVOR das
                 // neue (höhere) Produktions-Level gilt - sonst würde ein vergangener Zeitraum
@@ -591,16 +605,24 @@ final class GameEngine
 
                 $newLevel = (int) $active['level'] + 1;
                 $this->pdo->prepare(
-                    "UPDATE base_buildings SET level = ?, status = 'idle', started_at = NULL, finishes_at = NULL
+                    "UPDATE base_buildings SET level = ?, status = 'idle', started_at = NULL, finishes_at = NULL, paid_parallel = 0
                      WHERE base_id = ? AND building_type_id = ?"
                 )->execute([$newLevel, $baseId, $active['building_type_id']]);
+
+                if ((int) $active['paid_parallel'] === 1) {
+                    // Eine bezahlte Parallel-Baustelle zieht NIE aus der kostenlosen
+                    // Warteschlange nach - sonst würde eine einmalige Zahlung eine dauerhafte
+                    // zweite Lane erkaufen. Kein break: es könnte noch eine andere faellige
+                    // Baustelle (Lane 1 oder eine weitere bezahlte) geben.
+                    continue;
+                }
 
                 $nextStmt = $this->pdo->prepare('SELECT * FROM base_build_queue WHERE base_id = ? ORDER BY id ASC LIMIT 1 FOR UPDATE');
                 $nextStmt->execute([$baseId]);
                 $next = $nextStmt->fetch();
 
                 if ($next === false) {
-                    break;
+                    continue;
                 }
 
                 $nextSecondsStmt = $this->pdo->prepare('SELECT build_seconds FROM building_levels WHERE building_type_id = ? AND level = ?');
@@ -636,8 +658,15 @@ final class GameEngine
     // ============================================================
     private function advanceShipQueue(int $baseId, DateTimeImmutable $asOf): void
     {
+        // Lane 1 - die kostenlose FIFO-Kette (paid_parallel=0), unveraendertes Verhalten bis auf
+        // einen Fix: wenn eine Zeile fertig wird UND die naechste Zeile noch nicht gestartet war,
+        // startet die naechste exakt zu dem Zeitpunkt, an dem die vorherige fertig wurde
+        // ($cursor) - NICHT bei $asOf. Vorher wurde hier immer "jetzt" verwendet, auch wenn der
+        // Vorgaenger laengst (virtuell) fertig war - das hat dem Nachfolger die Zeitspanne
+        // dazwischen gestohlen (Advisor-Review-Fund, bisher nicht getestet).
+        $cursor = null;
         while (true) {
-            $stmt = $this->pdo->prepare('SELECT * FROM base_ship_queue WHERE base_id = ? ORDER BY id ASC LIMIT 1 FOR UPDATE');
+            $stmt = $this->pdo->prepare("SELECT * FROM base_ship_queue WHERE base_id = ? AND paid_parallel = 0 ORDER BY id ASC LIMIT 1 FOR UPDATE");
             $stmt->execute([$baseId]);
             $job = $stmt->fetch();
 
@@ -646,9 +675,7 @@ final class GameEngine
             }
 
             if ($job['started_at'] === null) {
-                // Vorheriger Auftrag ist gerade fertig geworden (oder dies ist der allererste) -
-                // dieser Auftrag startet GENAU jetzt in virtueller Zeit, nicht bei "jetzt real".
-                $startedAt = $asOf;
+                $startedAt = $cursor ?? $asOf;
                 $finishesAt = $startedAt->modify('+' . (int) $job['unit_build_seconds'] . ' seconds');
                 $this->pdo->prepare('UPDATE base_ship_queue SET started_at = ?, finishes_at = ? WHERE id = ?')
                     ->execute([$startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s'), $job['id']]);
@@ -661,26 +688,54 @@ final class GameEngine
                 break;
             }
 
-            $this->pdo->prepare(
-                'INSERT INTO base_ships (base_id, ship_type_id, quantity) VALUES (?, ?, 1)
-                 ON DUPLICATE KEY UPDATE quantity = quantity + 1'
-            )->execute([$baseId, $job['ship_type_id']]);
+            $this->completeOneShipUnit($baseId, $job, $finishesAt);
+            $cursor = $finishesAt;
+        }
 
-            $remaining = (int) $job['quantity'] - 1;
-            if ($remaining <= 0) {
-                $this->pdo->prepare('DELETE FROM base_ship_queue WHERE id = ?')->execute([$job['id']]);
-            } else {
-                $nextFinishesAt = $finishesAt->modify('+' . (int) $job['unit_build_seconds'] . ' seconds');
-                $this->pdo->prepare('UPDATE base_ship_queue SET quantity = ?, started_at = ?, finishes_at = ? WHERE id = ?')
-                    ->execute([$remaining, $finishesAt->format('Y-m-d H:i:s'), $nextFinishesAt->format('Y-m-d H:i:s'), $job['id']]);
+        // Bezahlte Parallel-Lanes - jede Zeile bekommt started_at/finishes_at schon beim
+        // Bezahlen (siehe queueShip()) und laeuft unabhaengig von Lane 1; beim Fertigwerden wird
+        // NIE ein Nachfolger aus der kostenlosen Warteschlange uebernommen (siehe
+        // completeOneShipUnit() - dort gibt es dafuer schlicht keinen Code, anders als bei Lane 1
+        // hier oben).
+        while (true) {
+            $stmt = $this->pdo->prepare(
+                'SELECT * FROM base_ship_queue WHERE base_id = ? AND paid_parallel = 1 AND finishes_at <= ?
+                 ORDER BY finishes_at ASC LIMIT 1 FOR UPDATE'
+            );
+            $stmt->execute([$baseId, $asOf->format('Y-m-d H:i:s')]);
+            $job = $stmt->fetch();
+
+            if ($job === false) {
+                break;
             }
+
+            $this->completeOneShipUnit($baseId, $job, new DateTimeImmutable($job['finishes_at']));
+        }
+    }
+
+    /** Eine fertiggewordene Produktionseinheit gutschreiben; falls die Bestellung noch mehr
+     *  Stueck will, dieselbe Zeile fuer die naechste Einheit weiterlaufen lassen. */
+    private function completeOneShipUnit(int $baseId, array $job, DateTimeImmutable $finishesAt): void
+    {
+        $this->pdo->prepare(
+            'INSERT INTO base_ships (base_id, ship_type_id, quantity) VALUES (?, ?, 1)
+             ON DUPLICATE KEY UPDATE quantity = quantity + 1'
+        )->execute([$baseId, $job['ship_type_id']]);
+
+        $remaining = (int) $job['quantity'] - 1;
+        if ($remaining <= 0) {
+            $this->pdo->prepare('DELETE FROM base_ship_queue WHERE id = ?')->execute([$job['id']]);
+        } else {
+            $nextFinishesAt = $finishesAt->modify('+' . (int) $job['unit_build_seconds'] . ' seconds');
+            $this->pdo->prepare('UPDATE base_ship_queue SET quantity = ?, started_at = ?, finishes_at = ? WHERE id = ?')
+                ->execute([$remaining, $finishesAt->format('Y-m-d H:i:s'), $nextFinishesAt->format('Y-m-d H:i:s'), $job['id']]);
         }
     }
 
     private const MAX_SHIP_QUEUE_LENGTH = 5; // offene Auftraege (nicht Stueckzahl) je Basis
     private const MAX_SHIP_ORDER_QUANTITY = 500;
 
-    public function queueShip(int $playerId, int $baseId, int $shipTypeId, int $quantity): array
+    public function queueShip(int $playerId, int $baseId, int $shipTypeId, int $quantity, bool $payForParallel = false): array
     {
         if ($quantity < 1 || $quantity > self::MAX_SHIP_ORDER_QUANTITY) {
             Response::error('Ungueltige Stueckzahl', 422);
@@ -734,13 +789,40 @@ final class GameEngine
 
             $unitBuildSeconds = $this->scaledSeconds((int) $type['build_seconds']);
 
-            $this->pdo->prepare(
-                'INSERT INTO base_ship_queue (base_id, ship_type_id, quantity, unit_cost_titan, unit_cost_deuterium, unit_cost_credits, unit_build_seconds)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
-            )->execute([$baseId, $shipTypeId, $quantity, $type['cost_titan'], $type['cost_deuterium'], $type['cost_credits'], $unitBuildSeconds]);
+            // Lane 1 = die kostenlose FIFO-Kette (paid_parallel=0). Nur wenn die gerade belegt
+            // ist UND bezahlt werden soll, startet dieser Auftrag sofort als eigene, unabhaengige
+            // Parallel-Lane statt kostenlos zu warten.
+            $lane1BusyStmt = $this->pdo->prepare('SELECT 1 FROM base_ship_queue WHERE base_id = ? AND paid_parallel = 0 LIMIT 1');
+            $lane1BusyStmt->execute([$baseId]);
+            $lane1Busy = $lane1BusyStmt->fetch() !== false;
 
-            // Falls das der einzige Auftrag ist, startet advanceShipQueue() ihn beim naechsten
-            // Aufruf automatisch (started_at ist NULL -> "aktiv, aber noch nicht gestartet").
+            if ($lane1Busy && $payForParallel) {
+                $parallelCost = $this->parallelBuildCost($unitBuildSeconds * $quantity);
+                if ($parallelCost > (int) $base['credits'] - $totalCredits) {
+                    $this->rollbackIfOpen();
+                    Response::error('Nicht genug Credits für eine parallele Werft-Baustelle', 422);
+                }
+                $this->pdo->prepare('UPDATE bases SET credits = credits - ? WHERE id = ?')->execute([$parallelCost, $baseId]);
+
+                $startedAt = new DateTimeImmutable();
+                $finishesAt = $startedAt->modify('+' . $unitBuildSeconds . ' seconds');
+                $this->pdo->prepare(
+                    'INSERT INTO base_ship_queue (base_id, ship_type_id, quantity, unit_cost_titan, unit_cost_deuterium, unit_cost_credits, unit_build_seconds, paid_parallel, started_at, finishes_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
+                )->execute([
+                    $baseId, $shipTypeId, $quantity, $type['cost_titan'], $type['cost_deuterium'], $type['cost_credits'], $unitBuildSeconds,
+                    $startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s'),
+                ]);
+            } else {
+                $this->pdo->prepare(
+                    'INSERT INTO base_ship_queue (base_id, ship_type_id, quantity, unit_cost_titan, unit_cost_deuterium, unit_cost_credits, unit_build_seconds)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)'
+                )->execute([$baseId, $shipTypeId, $quantity, $type['cost_titan'], $type['cost_deuterium'], $type['cost_credits'], $unitBuildSeconds]);
+            }
+
+            // Falls das der einzige Lane-1-Auftrag ist, startet advanceShipQueue() ihn beim
+            // naechsten Aufruf automatisch (started_at ist NULL -> "aktiv, aber noch nicht
+            // gestartet"); eine bezahlte Parallel-Zeile hat started_at/finishes_at oben schon.
             $this->advanceBaseTo($baseId, new DateTimeImmutable());
 
             $this->pdo->commit();
@@ -768,11 +850,12 @@ final class GameEngine
                 Response::error('Werft-Warteschlange ist leer', 422);
             }
 
-            $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM base_ship_queue WHERE base_id = ?');
-            $countStmt->execute([$baseId]);
-            if ((int) $countStmt->fetchColumn() === 1) {
-                // Einziger Eintrag = der gerade aktiv laufende Auftrag (erste Zeile) - der kann
-                // nicht storniert werden, analog zum laufenden Gebaeude-Ausbau in Phase 2.
+            if ($last['started_at'] !== null) {
+                // Bereits aktiv (laufende Lane-1-Produktion ODER eine bezahlte Parallel-Zeile,
+                // die direkt mit gesetztem started_at angelegt wird) - kann nicht storniert
+                // werden, analog zum laufenden Gebaeude-Ausbau. Frueher wurde das nur ueber
+                // "einziger Eintrag insgesamt" geprueft, was mit mehreren gleichzeitig aktiven
+                // Lanes nicht mehr stimmt.
                 $this->rollbackIfOpen();
                 Response::error('Laufender Bauauftrag kann nicht storniert werden', 422);
             }
@@ -839,34 +922,54 @@ final class GameEngine
         return (int) ($stmt->fetchColumn() ?: 0);
     }
 
-    private function startOrUpdateBuilding(int $baseId, int $buildingTypeId, DateTimeImmutable $startedAt, DateTimeImmutable $finishesAt): void
-    {
+    private function startOrUpdateBuilding(
+        int $baseId,
+        int $buildingTypeId,
+        DateTimeImmutable $startedAt,
+        DateTimeImmutable $finishesAt,
+        bool $paidParallel = false
+    ): void {
         $existing = $this->pdo->prepare('SELECT 1 FROM base_buildings WHERE base_id = ? AND building_type_id = ?');
         $existing->execute([$baseId, $buildingTypeId]);
 
         if ($existing->fetch() !== false) {
             $this->pdo->prepare(
-                "UPDATE base_buildings SET status = 'building', started_at = ?, finishes_at = ?
+                "UPDATE base_buildings SET status = 'building', started_at = ?, finishes_at = ?, paid_parallel = ?
                  WHERE base_id = ? AND building_type_id = ?"
-            )->execute([$startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s'), $baseId, $buildingTypeId]);
+            )->execute([$startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s'), (int) $paidParallel, $baseId, $buildingTypeId]);
         } else {
             $this->pdo->prepare(
-                "INSERT INTO base_buildings (base_id, building_type_id, level, status, started_at, finishes_at)
-                 VALUES (?, ?, 0, 'building', ?, ?)"
-            )->execute([$baseId, $buildingTypeId, $startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s')]);
+                "INSERT INTO base_buildings (base_id, building_type_id, level, status, started_at, finishes_at, paid_parallel)
+                 VALUES (?, ?, 0, 'building', ?, ?, ?)"
+            )->execute([$baseId, $buildingTypeId, $startedAt->format('Y-m-d H:i:s'), $finishesAt->format('Y-m-d H:i:s'), (int) $paidParallel]);
         }
     }
 
     // ============================================================
     // Gebäude-Ausbau (Level + Warteschlange, identisches Muster wie im Vorgängerprojekt)
     // ============================================================
-    public function queueBuilding(int $playerId, int $baseId, int $buildingTypeId): array
+    public function queueBuilding(int $playerId, int $baseId, int $buildingTypeId, bool $payForParallel = false): array
     {
         $this->pdo->beginTransaction();
 
         try {
             $base = $this->lockOwnBase($playerId, $baseId);
             $this->advanceBaseTo($baseId, new DateTimeImmutable());
+
+            // Eine bezahlte Parallel-Baustelle für GENAU DIESEN Gebäudetyp waere unsinnig, wenn er
+            // schon irgendwo (aktiv oder in der kostenlosen Warteschlange) auf ein Level-Up
+            // wartet - zwei gleichzeitige Level-Ups desselben Typs widersprechen sich (PRIMARY KEY
+            // (base_id, building_type_id) erlaubt ohnehin nur eine Zeile je Typ).
+            if ($payForParallel) {
+                $alreadyBuildingStmt = $this->pdo->prepare("SELECT 1 FROM base_buildings WHERE base_id = ? AND building_type_id = ? AND status = 'building'");
+                $alreadyBuildingStmt->execute([$baseId, $buildingTypeId]);
+                $alreadyQueuedStmt = $this->pdo->prepare('SELECT 1 FROM base_build_queue WHERE base_id = ? AND building_type_id = ?');
+                $alreadyQueuedStmt->execute([$baseId, $buildingTypeId]);
+                if ($alreadyBuildingStmt->fetch() !== false || $alreadyQueuedStmt->fetch() !== false) {
+                    $this->rollbackIfOpen();
+                    Response::error('Dieser Gebäudetyp wird bereits ausgebaut oder wartet schon in der Warteschlange', 422);
+                }
+            }
 
             $pendingCount = $this->pendingBuildCount($baseId);
             if ($pendingCount >= self::MAX_BUILD_QUEUE_LENGTH) {
@@ -907,14 +1010,27 @@ final class GameEngine
             $this->pdo->prepare('UPDATE bases SET titan = titan - ?, deuterium = deuterium - ?, credits = credits - ? WHERE id = ?')
                 ->execute([$levelRow['cost_titan'], $levelRow['cost_deuterium'], $levelRow['cost_credits'], $baseId]);
 
-            $activeStmt = $this->pdo->prepare("SELECT 1 FROM base_buildings WHERE base_id = ? AND status = 'building'");
+            // "Lane 1" = die kostenlose Baustelle - NUR Zeilen mit paid_parallel=0 zaehlen hier,
+            // sonst wuerde eine bereits bezahlte Parallel-Baustelle die naechste (kostenlose)
+            // Anfrage faelschlich wieder in die Warteschlange zwingen.
+            $activeStmt = $this->pdo->prepare("SELECT 1 FROM base_buildings WHERE base_id = ? AND status = 'building' AND paid_parallel = 0");
             $activeStmt->execute([$baseId]);
             $hasActiveBuild = $activeStmt->fetch() !== false;
 
+            $buildSeconds = $this->scaledSeconds((int) $levelRow['build_seconds']);
+
             if (!$hasActiveBuild) {
-                $buildSeconds = $this->scaledSeconds((int) $levelRow['build_seconds']);
                 $now = new DateTimeImmutable();
                 $this->startOrUpdateBuilding($baseId, $buildingTypeId, $now, $now->modify("+{$buildSeconds} seconds"));
+            } elseif ($payForParallel) {
+                $parallelCost = $this->parallelBuildCost($buildSeconds);
+                if ($parallelCost > (int) $base['credits'] - (int) $levelRow['cost_credits']) {
+                    $this->rollbackIfOpen();
+                    Response::error('Nicht genug Credits für eine parallele Baustelle', 422);
+                }
+                $this->pdo->prepare('UPDATE bases SET credits = credits - ? WHERE id = ?')->execute([$parallelCost, $baseId]);
+                $now = new DateTimeImmutable();
+                $this->startOrUpdateBuilding($baseId, $buildingTypeId, $now, $now->modify("+{$buildSeconds} seconds"), true);
             } else {
                 $this->pdo->prepare(
                     'INSERT INTO base_build_queue (base_id, building_type_id, target_level, cost_titan_paid, cost_deuterium_paid, cost_credits_paid)
@@ -1284,6 +1400,7 @@ final class GameEngine
             'incomingHostileFleets' => $incoming,
             'combatReports' => $reports,
             'gameSpeed' => $this->gameSpeed,
+            'parallelBuildRate' => $this->parallelBuildRate,
             'catalog' => $this->catalog(),
             'alliance' => $this->allianceInfo((int) $player['id']),
         ];

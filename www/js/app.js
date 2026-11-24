@@ -417,6 +417,9 @@ const App = (() => {
         document.querySelectorAll('[data-build-building]').forEach(btn => {
             btn.addEventListener('click', () => queueBuilding(parseInt(btn.dataset.buildBuilding, 10)));
         });
+        document.querySelectorAll('[data-build-building-parallel]').forEach(btn => {
+            btn.addEventListener('click', () => queueBuilding(parseInt(btn.dataset.buildBuildingParallel, 10), true));
+        });
     }
 
     function buildingIconHtml(effect) {
@@ -454,6 +457,13 @@ const App = (() => {
         const disabled = nl.locked || !affordable;
         const reason = nl.locked ? 'Kommandobrücke zu niedrig' : (!affordable ? 'Nicht genug Rohstoffe' : '');
 
+        // Laeuft gerade ein ANDERER Gebaeudetyp? Dann zusaetzlich die Option anbieten, diesen
+        // hier sofort parallel zu starten (kostet Credits), statt kostenlos auf das Ende der
+        // laufenden Baustelle zu warten.
+        const otherActive = base.buildings.some(ob => ob.id !== b.id && ob.status === 'building');
+        const parallelCost = Math.max(1, Math.ceil(nl.buildSeconds * (state.parallelBuildRate || 0)));
+        const parallelAffordable = affordable && !nl.locked && (nl.costCredits + parallelCost) <= base.credits;
+
         return `
             <div class="building-row">
                 ${buildingIconHtml(b.effect)}
@@ -465,13 +475,14 @@ const App = (() => {
                     ${reason ? `<div class="cost-line insufficient">${reason}</div>` : ''}
                 </div>
                 <button class="btn ${disabled ? '' : 'primary'}" data-build-building="${b.id}" ${disabled ? 'disabled' : ''}>Ausbauen</button>
+                ${otherActive ? `<button class="btn" data-build-building-parallel="${b.id}" ${!parallelAffordable ? 'disabled' : ''} title="Sofort parallel bauen statt zu warten">⚡ +${Format.number(parallelCost)} Cr.</button>` : ''}
             </div>`;
     }
 
-    async function queueBuilding(buildingTypeId) {
+    async function queueBuilding(buildingTypeId, payForParallel) {
         const base = currentBase();
         try {
-            await Api.post('/base/build', { baseId: base.id, buildingTypeId });
+            await Api.post('/base/build', { baseId: base.id, buildingTypeId, payForParallel: !!payForParallel });
             await refreshState();
         } catch (e) {
             errorToast(e, 'Fehler beim Ausbauen');
@@ -498,6 +509,7 @@ const App = (() => {
         const shipyard = base.buildings.find(b => b.effect === 'shipyard');
         const shipyardLevel = shipyard ? shipyard.level : 0;
 
+        const shipLaneBusy = base.shipQueue.length > 0;
         $('shipyard-list').innerHTML = shipyardLevel < 1
             ? '<p class="row-sub">Werft muss zuerst gebaut werden (siehe Basis-Tab).</p>'
             : state.catalog.shipTypes.filter(s => !s.isFlagship).map(s => {
@@ -511,17 +523,42 @@ const App = (() => {
                         <div class="stat-line">${shipStatsHtml(s)}</div>
                         <div class="cost-line">${Format.number(s.costTitan)} Titan · ${Format.number(s.costDeuterium)} Deut.${s.costCredits ? ' · ' + Format.number(s.costCredits) + ' Cr.' : ''} · ${Format.duration(s.buildSeconds)}/Stk.</div>
                         ${locked ? `<div class="cost-line insufficient">Benötigt Werft-Level ${s.minShipyardLevel}</div>` : ''}
+                        ${!locked && shipLaneBusy ? `<div class="row-sub" data-parallel-price="${s.id}"></div>` : ''}
                     </div>
                     ${locked ? '' : `<input type="number" min="1" max="500" value="1" data-ship-order-qty="${s.id}" style="width:56px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px; margin-right:6px;">`}
                     <button class="btn ${locked ? '' : 'primary'}" data-build-ship="${s.id}" ${locked ? 'disabled' : ''}>Bauen</button>
+                    ${!locked && shipLaneBusy ? `<button class="btn" data-build-ship-parallel="${s.id}" title="Sofort parallel bauen statt in der Werft-Schlange zu warten">⚡ Parallel</button>` : ''}
                 </div>`;
             }).join('');
+
+        function updateParallelPrice(shipTypeId) {
+            const type = state.catalog.shipTypes.find(s => s.id === shipTypeId);
+            const qtyInput = document.querySelector(`[data-ship-order-qty="${shipTypeId}"]`);
+            const priceEl = document.querySelector(`[data-parallel-price="${shipTypeId}"]`);
+            if (!type || !qtyInput || !priceEl) return;
+            const quantity = Math.max(1, Math.min(500, parseInt(qtyInput.value, 10) || 1));
+            const cost = Math.max(1, Math.ceil(type.buildSeconds * quantity * (state.parallelBuildRate || 0)));
+            priceEl.textContent = `⚡ Parallel bauen kostet zusätzlich ${Format.number(cost)} Credits`;
+        }
+
+        document.querySelectorAll('[data-ship-order-qty]').forEach(input => {
+            updateParallelPrice(parseInt(input.dataset.shipOrderQty, 10));
+            input.addEventListener('input', () => updateParallelPrice(parseInt(input.dataset.shipOrderQty, 10)));
+        });
 
         document.querySelectorAll('[data-build-ship]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const qtyInput = document.querySelector(`[data-ship-order-qty="${btn.dataset.buildShip}"]`);
                 const quantity = Math.max(1, Math.min(500, parseInt(qtyInput?.value, 10) || 1));
                 queueShip(parseInt(btn.dataset.buildShip, 10), quantity);
+            });
+        });
+        document.querySelectorAll('[data-build-ship-parallel]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const shipTypeId = parseInt(btn.dataset.buildShipParallel, 10);
+                const qtyInput = document.querySelector(`[data-ship-order-qty="${shipTypeId}"]`);
+                const quantity = Math.max(1, Math.min(500, parseInt(qtyInput?.value, 10) || 1));
+                queueShip(shipTypeId, quantity, true);
             });
         });
 
@@ -586,10 +623,10 @@ const App = (() => {
         return { attack: 'Angriff', plunder: 'Plünderung', station: 'Stationierung', transport: 'Transport', colonize: 'Kolonisierung' }[m] || m;
     }
 
-    async function queueShip(shipTypeId, quantity) {
+    async function queueShip(shipTypeId, quantity, payForParallel) {
         const base = currentBase();
         try {
-            await Api.post('/base/ships/build', { baseId: base.id, shipTypeId, quantity: quantity || 1 });
+            await Api.post('/base/ships/build', { baseId: base.id, shipTypeId, quantity: quantity || 1, payForParallel: !!payForParallel });
             await refreshState();
         } catch (e) {
             errorToast(e, 'Fehler beim Schiffsbau');
