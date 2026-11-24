@@ -48,13 +48,13 @@ function registerPlayer(PDO $pdo, array &$createdDeviceIds, string $prefix): arr
     // Server begrenzt Namen auf max. 20 Zeichen - lange Test-Prefixe müssen gekürzt werden,
     // damit noch Platz für ein paar Zufallszeichen bleibt (Eindeutigkeit bei parallelen Läufen).
     $username = substr($prefix, 0, 14) . bin2hex(random_bytes(3));
-    $res = apiCall('POST', '/api/register', ['deviceId' => $deviceId, 'username' => $username]);
+    $res = apiCall('POST', '/api/register', ['deviceId' => $deviceId, 'username' => $username, 'universeId' => 1]);
     if ($res['status'] !== 200) {
         throw new RuntimeException('Registrierung fehlgeschlagen: ' . json_encode($res));
     }
     $token = $res['body']['token'];
 
-    $stmt = $pdo->prepare('SELECT id FROM players WHERE device_id = ?');
+    $stmt = $pdo->prepare('SELECT id FROM players WHERE device_id = ? AND universe_id = 1');
     $stmt->execute([$deviceId]);
     $playerId = (int) $stmt->fetchColumn();
 
@@ -119,7 +119,7 @@ check($foreignDispatch['status'] === 403, 'Flottenversand von fremder Basis wird
 
 // --- Test 3: erneute Registrierung derselben Geräte-ID wird abgelehnt (Account-Übernahme) ---
 echo "Test: erneute Registrierung derselben Geräte-ID wird abgelehnt\n";
-$reregister = apiCall('POST', '/api/register', ['deviceId' => $p2['deviceId'], 'username' => 'NeuerName']);
+$reregister = apiCall('POST', '/api/register', ['deviceId' => $p2['deviceId'], 'username' => 'NeuerName', 'universeId' => 1]);
 check($reregister['status'] === 409, 'Zweite Registrierung mit bekannter device_id wird abgelehnt (409)');
 
 // --- Test 3b: Werft-Warteschlange (Schiffsbau) - seit Phase 2b Teil der API ---

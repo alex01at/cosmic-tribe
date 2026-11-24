@@ -23,71 +23,77 @@ require __DIR__ . '/../src/AdminAuth.php';
 require __DIR__ . '/../src/AdminEngine.php';
 require __DIR__ . '/../src/CombatResolver.php';
 require __DIR__ . '/../src/GameEngine.php';
+require __DIR__ . '/../src/GalaxyGenerator.php';
 
 $pdo = Database::connection();
 $config = require __DIR__ . '/../config/config.php';
 
 $adminEngine = new AdminEngine($pdo, $config);
-// game_speed kommt, falls im Admin-Panel gesetzt, live aus der DB statt aus config.php - genau
-// dafuer gibt es game_settings: aendern ohne Redeploy.
-$gameSpeed = $adminEngine->getSettings()['gameSpeed'];
 
 $router = new Router();
+
+// Für Spieler-Routen: Spieler auflösen UND passend dazu eine GameEngine mit der game_speed
+// SEINES Universums bauen - jedes Universum kann eine eigene Geschwindigkeit haben.
+$requirePlayerEngine = function (PDO $pdo, AdminEngine $adminEngine): array {
+    $player = Auth::requirePlayer($pdo);
+    $gameSpeed = $adminEngine->getUniverseGameSpeed((int) $player['universe_id']);
+
+    return [$player, new GameEngine($pdo, $gameSpeed)];
+};
 
 $router->post('/api/register', function (array $body) use ($pdo) {
     $deviceId = (string) ($body['deviceId'] ?? '');
     $username = (string) ($body['username'] ?? '');
-    Response::json(Auth::register($pdo, $deviceId, $username));
+    $universeId = (int) ($body['universeId'] ?? 0);
+    Response::json(Auth::register($pdo, $deviceId, $username, $universeId));
 });
 
-$router->get('/api/state', function () use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
-    $engine = new GameEngine($pdo, $gameSpeed);
+$router->get('/api/universes', function () use ($pdo) {
+    Response::json(Auth::listOpenUniverses($pdo));
+});
+
+$router->get('/api/state', function () use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     Response::json($engine->state($player));
 });
 
-$router->post('/api/base/build', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/base/build', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $baseId = (int) ($body['baseId'] ?? 0);
     $buildingTypeId = (int) ($body['buildingTypeId'] ?? 0);
-    $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->queueBuilding((int) $player['id'], $baseId, $buildingTypeId));
 });
 
-$router->post('/api/base/cancel', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/base/cancel', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $baseId = (int) ($body['baseId'] ?? 0);
-    $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->cancelQueuedBuilding((int) $player['id'], $baseId));
 });
 
-$router->post('/api/base/ships/build', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/base/ships/build', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $baseId = (int) ($body['baseId'] ?? 0);
     $shipTypeId = (int) ($body['shipTypeId'] ?? 0);
     $quantity = (int) ($body['quantity'] ?? 0);
-    $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->queueShip((int) $player['id'], $baseId, $shipTypeId, $quantity));
 });
 
-$router->post('/api/base/ships/cancel', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/base/ships/cancel', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $baseId = (int) ($body['baseId'] ?? 0);
-    $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->cancelQueuedShip((int) $player['id'], $baseId));
 });
 
-$router->get('/api/map', function () use ($pdo, $gameSpeed) {
-    Auth::requirePlayer($pdo);
+$router->get('/api/map', function () use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $cx = (int) ($_GET['cx'] ?? 0);
     $cy = (int) ($_GET['cy'] ?? 0);
     $radius = (int) ($_GET['r'] ?? 5);
-    $engine = new GameEngine($pdo, $gameSpeed);
-    Response::json($engine->mapWindow($cx, $cy, $radius));
+    Response::json($engine->mapWindow((int) $player['universe_id'], $cx, $cy, $radius));
 });
 
-$router->post('/api/fleet/dispatch', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/fleet/dispatch', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $baseId = (int) ($body['baseId'] ?? 0);
     $shipComposition = [];
     foreach ((array) ($body['ships'] ?? []) as $shipTypeId => $quantity) {
@@ -98,43 +104,37 @@ $router->post('/api/fleet/dispatch', function (array $body) use ($pdo, $gameSpee
     $mission = (string) ($body['mission'] ?? '');
     $energyPreset = (string) ($body['energyPreset'] ?? 'weapons');
 
-    $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->dispatchFleet(
         (int) $player['id'], $baseId, $shipComposition, $targetSectorId, $targetPosition, $mission, $energyPreset
     ));
 });
 
-$router->get('/api/alliances', function () use ($pdo, $gameSpeed) {
-    Auth::requirePlayer($pdo);
-    $engine = new GameEngine($pdo, $gameSpeed);
-    Response::json($engine->listAlliances());
+$router->get('/api/alliances', function () use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
+    Response::json($engine->listAlliances((int) $player['universe_id']));
 });
 
-$router->post('/api/alliance/create', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/alliance/create', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $name = (string) ($body['name'] ?? '');
     $tag = (string) ($body['tag'] ?? '');
-    $engine = new GameEngine($pdo, $gameSpeed);
-    Response::json($engine->createAlliance((int) $player['id'], $name, $tag));
+    Response::json($engine->createAlliance((int) $player['id'], (int) $player['universe_id'], $name, $tag));
 });
 
-$router->post('/api/alliance/join', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/alliance/join', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $allianceId = (int) ($body['allianceId'] ?? 0);
-    $engine = new GameEngine($pdo, $gameSpeed);
-    Response::json($engine->joinAlliance((int) $player['id'], $allianceId));
+    Response::json($engine->joinAlliance((int) $player['id'], (int) $player['universe_id'], $allianceId));
 });
 
-$router->post('/api/alliance/leave', function () use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
-    $engine = new GameEngine($pdo, $gameSpeed);
+$router->post('/api/alliance/leave', function () use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     Response::json($engine->leaveAlliance((int) $player['id']));
 });
 
-$router->post('/api/alliance/kick', function (array $body) use ($pdo, $gameSpeed) {
-    $player = Auth::requirePlayer($pdo);
+$router->post('/api/alliance/kick', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $targetPlayerId = (int) ($body['playerId'] ?? 0);
-    $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->kickAllianceMember((int) $player['id'], $targetPlayerId));
 });
 
@@ -153,14 +153,25 @@ $router->post('/api/admin/logout', function () use ($pdo) {
     Response::json(['ok' => true]);
 });
 
-$router->get('/api/admin/settings', function () use ($pdo, $adminEngine) {
+$router->get('/api/admin/universes', function () use ($pdo, $adminEngine) {
     AdminAuth::requireAdmin($pdo);
-    Response::json($adminEngine->getSettings());
+    Response::json(['universes' => $adminEngine->listUniverses()]);
 });
 
-$router->post('/api/admin/settings', function (array $body) use ($pdo, $adminEngine) {
+$router->post('/api/admin/universes/create', function (array $body) use ($pdo, $adminEngine) {
     AdminAuth::requireAdmin($pdo);
-    Response::json($adminEngine->updateSettings($body));
+    Response::json(['universes' => $adminEngine->createUniverse(
+        (string) ($body['name'] ?? ''),
+        (int) ($body['maxPlayers'] ?? 0),
+        (int) ($body['galaxySize'] ?? 0),
+        (float) ($body['gameSpeed'] ?? 0)
+    )]);
+});
+
+$router->post('/api/admin/universes/update', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $id = (int) ($body['id'] ?? 0);
+    Response::json(['universes' => $adminEngine->updateUniverse($id, $body)]);
 });
 
 $router->get('/api/admin/catalog', function () use ($pdo, $adminEngine) {
@@ -183,7 +194,8 @@ $router->post('/api/admin/catalog/ship-type', function (array $body) use ($pdo, 
 
 $router->get('/api/admin/players', function () use ($pdo, $adminEngine) {
     AdminAuth::requireAdmin($pdo);
-    Response::json(['players' => $adminEngine->listPlayers()]);
+    $universeId = isset($_GET['universeId']) && $_GET['universeId'] !== '' ? (int) $_GET['universeId'] : null;
+    Response::json(['players' => $adminEngine->listPlayers($universeId)]);
 });
 
 $router->post('/api/admin/players/delete', function (array $body) use ($pdo, $adminEngine) {
@@ -191,6 +203,20 @@ $router->post('/api/admin/players/delete', function (array $body) use ($pdo, $ad
     $playerId = (int) ($body['playerId'] ?? 0);
     $adminEngine->deletePlayer($playerId);
     Response::json(['ok' => true]);
+});
+
+$router->get('/api/admin/players/bases', function () use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $playerId = (int) ($_GET['playerId'] ?? 0);
+    Response::json(['bases' => $adminEngine->getPlayerBases($playerId)]);
+});
+
+$router->post('/api/admin/bases/update', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $baseId = (int) ($body['baseId'] ?? 0);
+    Response::json(['bases' => $adminEngine->updateBaseResources(
+        $baseId, (int) ($body['titan'] ?? 0), (int) ($body['deuterium'] ?? 0), (int) ($body['credits'] ?? 0)
+    )]);
 });
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);

@@ -11,14 +11,19 @@
 
   <div id="login-screen">
     <h1>Starforge</h1>
+    <div id="universe-select" class="hidden">
+      <p>Wähle ein Universum:</p>
+      <div id="universe-list"></div>
+    </div>
     <div id="boot-retry" class="hidden">
       <p>Server nicht erreichbar. Dein Kommando existiert bereits - keine neue Basis gründen, einfach erneut versuchen.</p>
       <button class="btn primary" id="boot-retry-btn" style="width:100%;max-width:280px;">Erneut versuchen</button>
     </div>
-    <div id="register-form">
+    <div id="register-form" class="hidden">
       <p>Gib deinen Kommandanten-Namen ein, um deine erste Basis zu gründen.</p>
       <input id="login-username" type="text" placeholder="Name (3-20 Zeichen)" maxlength="20" autocomplete="off">
       <button class="btn primary" id="login-submit" style="width:100%;max-width:280px;">Basis gründen</button>
+      <button class="btn" id="back-to-universe-select" style="width:100%;max-width:280px;margin-top:8px;">Andere Welt wählen</button>
     </div>
     <div id="login-error"></div>
   </div>
@@ -40,6 +45,7 @@
         <span class="label">Credits</span>
         <span class="value" id="res-credits">0</span>
       </div>
+      <button class="btn" id="switch-universe-btn" title="Universum wechseln">🌌</button>
     </div>
 
     <div id="offline-bar">⚠ Keine Verbindung zum Server - letzter bekannter Stand wird angezeigt.</div>

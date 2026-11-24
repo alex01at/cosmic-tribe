@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Betreiber-Verwaltung: Spielgeschwindigkeit/Katalogpreise/Spielerliste. Bewusst eine eigene
+ * Betreiber-Verwaltung: Universen (Welten)/Katalogpreise/Spielerliste. Bewusst eine eigene
  * Klasse statt in GameEngine - das hier ist Betriebs-CRUD, keine Spiellogik (keine lazy
  * Zeit-Verarbeitung, keine Sperren/Transaktionen wie bei Spieleraktionen noetig).
  */
@@ -13,38 +13,103 @@ final class AdminEngine
     {
     }
 
-    public function getSettings(): array
+    /** Geschwindigkeit des Universums, in dem ein Spieler steckt - ersetzt die frühere globale game_speed. */
+    public function getUniverseGameSpeed(int $universeId): float
     {
-        $stmt = $this->pdo->query('SELECT setting_key, setting_value FROM game_settings');
-        $overrides = [];
-        foreach ($stmt->fetchAll() as $row) {
-            $overrides[$row['setting_key']] = $row['setting_value'];
-        }
+        $stmt = $this->pdo->prepare('SELECT game_speed FROM universes WHERE id = ?');
+        $stmt->execute([$universeId]);
+        $value = $stmt->fetchColumn();
 
-        return [
-            'gameSpeed' => isset($overrides['game_speed']) ? (float) $overrides['game_speed'] : (float) $this->defaultConfig['app']['game_speed'],
-        ];
+        return $value !== false ? (float) $value : (float) $this->defaultConfig['app']['game_speed'];
     }
 
-    public function updateSettings(array $values): array
+    // --- Universen -------------------------------------------------------
+
+    public function listUniverses(): array
     {
-        if (isset($values['gameSpeed'])) {
-            $gameSpeed = (float) $values['gameSpeed'];
-            if ($gameSpeed <= 0 || $gameSpeed > 1000) {
-                Response::error('Geschwindigkeit muss zwischen 0 und 1000 liegen', 422);
+        $rows = $this->pdo->query(
+            "SELECT u.*, (SELECT COUNT(*) FROM players WHERE universe_id = u.id) AS player_count
+             FROM universes u ORDER BY u.id ASC"
+        )->fetchAll();
+
+        return array_map(fn ($u) => [
+            'id' => (int) $u['id'],
+            'name' => $u['name'],
+            'status' => $u['status'],
+            'maxPlayers' => (int) $u['max_players'],
+            'galaxySize' => (int) $u['galaxy_size'],
+            'gameSpeed' => (float) $u['game_speed'],
+            'playerCount' => (int) $u['player_count'],
+            'createdAt' => $u['created_at'],
+        ], $rows);
+    }
+
+    public function createUniverse(string $name, int $maxPlayers, int $galaxySize, float $gameSpeed): array
+    {
+        $name = trim($name);
+        if ($name === '' || mb_strlen($name) > 60) {
+            Response::error('Name muss 1-60 Zeichen haben', 422);
+        }
+        if ($maxPlayers < 1 || $maxPlayers > 100000) {
+            Response::error('Max. Spieler muss zwischen 1 und 100000 liegen', 422);
+        }
+        if ($galaxySize < 5 || $galaxySize > 60) {
+            Response::error('Rastergröße muss zwischen 5 und 60 liegen', 422);
+        }
+        if ($gameSpeed <= 0 || $gameSpeed > 1000) {
+            Response::error('Geschwindigkeit muss zwischen 0 und 1000 liegen', 422);
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $this->pdo->prepare(
+                'INSERT INTO universes (name, max_players, galaxy_size, game_speed) VALUES (?, ?, ?, ?)'
+            )->execute([$name, $maxPlayers, $galaxySize, $gameSpeed]);
+            $universeId = (int) $this->pdo->lastInsertId();
+
+            GalaxyGenerator::generate($this->pdo, $universeId, $galaxySize);
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
             }
-            $this->upsertSetting('game_speed', (string) $gameSpeed);
+            throw $e;
         }
 
-        return $this->getSettings();
+        return $this->listUniverses();
     }
 
-    private function upsertSetting(string $key, string $value): void
+    public function updateUniverse(int $id, array $fields): array
     {
+        $status = (string) ($fields['status'] ?? '');
+        if (!in_array($status, ['open', 'closed'], true)) {
+            Response::error('Ungültiger Status', 422);
+        }
+        $maxPlayers = (int) ($fields['maxPlayers'] ?? 0);
+        if ($maxPlayers < 1 || $maxPlayers > 100000) {
+            Response::error('Max. Spieler muss zwischen 1 und 100000 liegen', 422);
+        }
+        $gameSpeed = (float) ($fields['gameSpeed'] ?? 0);
+        if ($gameSpeed <= 0 || $gameSpeed > 1000) {
+            Response::error('Geschwindigkeit muss zwischen 0 und 1000 liegen', 422);
+        }
+        $name = trim((string) ($fields['name'] ?? ''));
+        if ($name === '' || mb_strlen($name) > 60) {
+            Response::error('Name muss 1-60 Zeichen haben', 422);
+        }
+
+        $existsStmt = $this->pdo->prepare('SELECT 1 FROM universes WHERE id = ?');
+        $existsStmt->execute([$id]);
+        if ($existsStmt->fetch() === false) {
+            Response::error('Universum nicht gefunden', 404);
+        }
+
         $this->pdo->prepare(
-            'INSERT INTO game_settings (setting_key, setting_value) VALUES (?, ?)
-             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
-        )->execute([$key, $value]);
+            'UPDATE universes SET name = ?, status = ?, max_players = ?, game_speed = ? WHERE id = ?'
+        )->execute([$name, $status, $maxPlayers, $gameSpeed, $id]);
+
+        return $this->listUniverses();
     }
 
     public function getCatalog(): array
@@ -116,22 +181,28 @@ final class AdminEngine
         return $this->getCatalog();
     }
 
-    public function listPlayers(): array
+    public function listPlayers(?int $universeId = null): array
     {
-        $stmt = $this->pdo->query(
-            "SELECT p.id, p.username, p.created_at,
-                    COUNT(b.id) AS base_count,
-                    COALESCE(SUM(b.titan), 0) AS total_titan,
-                    COALESCE(SUM(b.deuterium), 0) AS total_deuterium,
-                    COALESCE(SUM(b.credits), 0) AS total_credits
-             FROM players p
-             LEFT JOIN bases b ON b.player_id = p.id
-             GROUP BY p.id
-             ORDER BY p.created_at DESC"
-        );
+        $sql = "SELECT p.id, p.universe_id, p.username, p.created_at,
+                       COUNT(b.id) AS base_count,
+                       COALESCE(SUM(b.titan), 0) AS total_titan,
+                       COALESCE(SUM(b.deuterium), 0) AS total_deuterium,
+                       COALESCE(SUM(b.credits), 0) AS total_credits
+                FROM players p
+                LEFT JOIN bases b ON b.player_id = p.id";
+        $params = [];
+        if ($universeId !== null) {
+            $sql .= ' WHERE p.universe_id = ?';
+            $params[] = $universeId;
+        }
+        $sql .= ' GROUP BY p.id ORDER BY p.created_at DESC';
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
 
         return array_map(fn ($r) => [
             'id' => (int) $r['id'],
+            'universeId' => (int) $r['universe_id'],
             'username' => $r['username'],
             'createdAt' => $r['created_at'],
             'baseCount' => (int) $r['base_count'],
@@ -139,6 +210,43 @@ final class AdminEngine
             'totalDeuterium' => (int) $r['total_deuterium'],
             'totalCredits' => (int) $r['total_credits'],
         ], $stmt->fetchAll());
+    }
+
+    /** Basen eines Spielers mit ihren Rohstoffen - Grundlage für den Basen-Editor im Panel. */
+    public function getPlayerBases(int $playerId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, name, titan, deuterium, credits FROM bases WHERE player_id = ? ORDER BY id ASC'
+        );
+        $stmt->execute([$playerId]);
+
+        return array_map(fn ($b) => [
+            'id' => (int) $b['id'],
+            'name' => $b['name'],
+            'titan' => (int) $b['titan'],
+            'deuterium' => (int) $b['deuterium'],
+            'credits' => (int) $b['credits'],
+        ], $stmt->fetchAll());
+    }
+
+    /** Admin-Direktbearbeitung der Rohstoffe einer Basis - unabhängig vom normalen Spielfluss. */
+    public function updateBaseResources(int $baseId, int $titan, int $deuterium, int $credits): array
+    {
+        if ($titan < 0 || $deuterium < 0 || $credits < 0) {
+            Response::error('Rohstoffe dürfen nicht negativ sein', 422);
+        }
+
+        $stmt = $this->pdo->prepare('UPDATE bases SET titan = ?, deuterium = ?, credits = ? WHERE id = ?');
+        $stmt->execute([$titan, $deuterium, $credits, $baseId]);
+
+        $checkStmt = $this->pdo->prepare('SELECT player_id FROM bases WHERE id = ?');
+        $checkStmt->execute([$baseId]);
+        $playerId = $checkStmt->fetchColumn();
+        if ($playerId === false) {
+            Response::error('Basis nicht gefunden', 404);
+        }
+
+        return $this->getPlayerBases((int) $playerId);
     }
 
     // Loescht einen Spieler samt allem, was an ihm/seinen Basen haengt - dieselbe

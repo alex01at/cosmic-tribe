@@ -85,6 +85,10 @@ const App = (() => {
     // Boot / Login
     // ============================================================
     async function boot() {
+        if (Api.getActiveUniverse() === null) {
+            await showUniverseSelect();
+            return;
+        }
         if (Api.getToken()) {
             try {
                 await refreshState();
@@ -113,6 +117,7 @@ const App = (() => {
     function showBootRetry() {
         $('login-screen').classList.remove('hidden');
         $('game-screen').classList.add('hidden');
+        $('universe-select').classList.add('hidden');
         $('boot-retry').classList.remove('hidden');
         $('register-form').classList.add('hidden');
     }
@@ -120,8 +125,49 @@ const App = (() => {
     function showLogin() {
         $('login-screen').classList.remove('hidden');
         $('game-screen').classList.add('hidden');
+        $('universe-select').classList.add('hidden');
         $('boot-retry').classList.add('hidden');
         $('register-form').classList.remove('hidden');
+    }
+
+    async function showUniverseSelect() {
+        $('login-screen').classList.remove('hidden');
+        $('game-screen').classList.add('hidden');
+        $('boot-retry').classList.add('hidden');
+        $('register-form').classList.add('hidden');
+        $('universe-select').classList.remove('hidden');
+        $('login-error').textContent = '';
+
+        const listEl = $('universe-list');
+        listEl.innerHTML = '<p>Lade Universen…</p>';
+        try {
+            const res = await Api.listUniverses();
+            const universes = res.universes || [];
+            if (universes.length === 0) {
+                listEl.innerHTML = '<p>Aktuell ist kein Universum offen.</p>';
+                return;
+            }
+            listEl.innerHTML = universes.map(u => `
+                <button class="btn primary universe-option" data-universe-id="${u.id}" style="width:100%;max-width:280px;display:block;margin-bottom:8px;">
+                    ${Format.escapeHtml(u.name)}<br>
+                    <span style="font-size:12px;opacity:0.8;">${u.playerCount}/${u.maxPlayers} Spieler · Tempo ${u.gameSpeed}x</span>
+                </button>
+            `).join('');
+            listEl.querySelectorAll('.universe-option').forEach(btn => {
+                btn.addEventListener('click', () => selectUniverse(parseInt(btn.dataset.universeId, 10)));
+            });
+        } catch (e) {
+            listEl.innerHTML = `<p>${humanizeError(e)}</p>`;
+        }
+    }
+
+    async function selectUniverse(universeId) {
+        Api.setActiveUniverse(universeId);
+        if (Api.hasTokenFor(universeId)) {
+            await boot();
+        } else {
+            showLogin();
+        }
     }
 
     function showGame() {
@@ -134,6 +180,14 @@ const App = (() => {
         $('login-submit').addEventListener('click', submitLogin);
         $('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
         $('boot-retry-btn').addEventListener('click', boot);
+        $('back-to-universe-select').addEventListener('click', () => {
+            Api.clearActiveUniverse();
+            showUniverseSelect();
+        });
+        $('switch-universe-btn').addEventListener('click', () => {
+            Api.clearActiveUniverse();
+            boot();
+        });
     }
 
     async function submitLogin() {
@@ -144,7 +198,7 @@ const App = (() => {
             return;
         }
         try {
-            const res = await Api.post('/register', { deviceId: Api.getDeviceId(), username });
+            const res = await Api.post('/register', { deviceId: Api.getDeviceId(), username, universeId: Api.getActiveUniverse() });
             Api.setToken(res.token);
             await refreshState();
             showGame();

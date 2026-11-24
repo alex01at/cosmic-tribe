@@ -29,7 +29,7 @@ final class Auth
      * Account-Übernahme). Ein Spieler, der sein Gerät wechselt, braucht einen eigenen
      * Wiederherstellungsweg (nicht Teil von Phase 2).
      */
-    public static function register(PDO $pdo, string $deviceId, string $username): array
+    public static function register(PDO $pdo, string $deviceId, string $username, int $universeId): array
     {
         $deviceId = trim($deviceId);
         $username = trim($username);
@@ -44,18 +44,41 @@ final class Auth
             Response::error('Name enthält ungültige Zeichen', 422);
         }
 
-        $existing = $pdo->prepare('SELECT 1 FROM players WHERE device_id = ?');
-        $existing->execute([$deviceId]);
-        if ($existing->fetch() !== false) {
-            Response::error('Diese Geräte-ID ist bereits registriert', 409);
-        }
-
+        // Universum muss existieren und offen sein, UND die Spielerzahl wird gegen max_players
+        // geprueft - beides in derselben Transaktion wie der Insert (FOR UPDATE auf die
+        // universes-Zeile), sonst koennten zwei gleichzeitige Registrierungen den letzten Platz
+        // ueberbuchen (dieselbe Lektion wie beim Allianz-Beitritt in GameEngine::joinAlliance).
         $pdo->beginTransaction();
 
         try {
-            $playerStmt = $pdo->prepare('INSERT INTO players (device_id, username) VALUES (?, ?)');
+            $universeStmt = $pdo->prepare('SELECT * FROM universes WHERE id = ? FOR UPDATE');
+            $universeStmt->execute([$universeId]);
+            $universe = $universeStmt->fetch();
+            if ($universe === false) {
+                $pdo->rollBack();
+                Response::error('Universum existiert nicht', 404);
+            }
+            if ($universe['status'] !== 'open') {
+                $pdo->rollBack();
+                Response::error('Dieses Universum ist geschlossen', 409);
+            }
+            $countStmt = $pdo->prepare('SELECT COUNT(*) FROM players WHERE universe_id = ?');
+            $countStmt->execute([$universeId]);
+            if ((int) $countStmt->fetchColumn() >= (int) $universe['max_players']) {
+                $pdo->rollBack();
+                Response::error('Dieses Universum ist voll', 409);
+            }
+
+            $existing = $pdo->prepare('SELECT 1 FROM players WHERE device_id = ? AND universe_id = ?');
+            $existing->execute([$deviceId, $universeId]);
+            if ($existing->fetch() !== false) {
+                $pdo->rollBack();
+                Response::error('Diese Geräte-ID ist in diesem Universum bereits registriert', 409);
+            }
+
+            $playerStmt = $pdo->prepare('INSERT INTO players (universe_id, device_id, username) VALUES (?, ?, ?)');
             try {
-                $playerStmt->execute([$deviceId, $username]);
+                $playerStmt->execute([$universeId, $deviceId, $username]);
             } catch (PDOException $e) {
                 // Doppelter Name (UNIQUE) - derselbe Fang-statt-Vorab-Check wie bei Gildennamen
                 // im Vorgängerprojekt, einzig verlässlich bei echter Gleichzeitigkeit.
@@ -71,7 +94,7 @@ final class Auth
             $pdo->prepare('INSERT INTO user_tokens (player_id, token_hash, device_label) VALUES (?, ?, ?)')
                 ->execute([$playerId, self::hashToken($token), 'register']);
 
-            [$sectorId, $position] = self::findFreeSlot($pdo);
+            [$sectorId, $position] = self::findFreeSlot($pdo, $universeId);
 
             $protectedUntil = (new DateTimeImmutable())->modify('+' . self::BEGINNER_PROTECTION_HOURS . ' hours');
             $pdo->prepare(
@@ -99,9 +122,11 @@ final class Auth
      * Migration 001). Liest existierende Sektoren statt eine Galaxie-Größe anzunehmen, damit das
      * nicht an seed.php's GALAXY_SIZE gekoppelt ist.
      */
-    private static function findFreeSlot(PDO $pdo): array
+    private static function findFreeSlot(PDO $pdo, int $universeId): array
     {
-        $sectors = $pdo->query('SELECT id FROM sectors ORDER BY RAND() LIMIT 100')->fetchAll(PDO::FETCH_COLUMN);
+        $sectorsStmt = $pdo->prepare('SELECT id FROM sectors WHERE universe_id = ? ORDER BY RAND() LIMIT 100');
+        $sectorsStmt->execute([$universeId]);
+        $sectors = $sectorsStmt->fetchAll(PDO::FETCH_COLUMN);
         if ($sectors === []) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -130,6 +155,26 @@ final class Auth
             $pdo->rollBack();
         }
         Response::error('Keine freien Basis-Plätze mehr in der Galaxie', 500);
+    }
+
+    /** Öffentliche Welt-Auswahl vor dem Login/Registrieren - zeigt nur offene Universen. */
+    public static function listOpenUniverses(PDO $pdo): array
+    {
+        $rows = $pdo->query(
+            "SELECT u.id, u.name, u.max_players, u.game_speed,
+                    (SELECT COUNT(*) FROM players WHERE universe_id = u.id) AS player_count
+             FROM universes u
+             WHERE u.status = 'open'
+             ORDER BY u.id ASC"
+        )->fetchAll();
+
+        return ['universes' => array_map(fn ($u) => [
+            'id' => (int) $u['id'],
+            'name' => $u['name'],
+            'maxPlayers' => (int) $u['max_players'],
+            'playerCount' => (int) $u['player_count'],
+            'gameSpeed' => (float) $u['game_speed'],
+        ], $rows)];
     }
 
     /** Resolves the player for the current request's Authorization: Bearer token, or rejects it. */

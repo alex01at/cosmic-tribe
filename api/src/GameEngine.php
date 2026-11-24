@@ -1004,7 +1004,7 @@ final class GameEngine
 
             $this->assertValidMissionTarget($playerId, $mission, $targetSectorId, $targetPosition, $shipComposition, $shipTypes);
 
-            $sectorStmt = $this->pdo->prepare('SELECT x, y FROM sectors WHERE id = ?');
+            $sectorStmt = $this->pdo->prepare('SELECT x, y, universe_id FROM sectors WHERE id = ?');
             $sectorStmt->execute([$base['sector_id']]);
             $originCoords = $sectorStmt->fetch();
             $sectorStmt->execute([$targetSectorId]);
@@ -1012,6 +1012,14 @@ final class GameEngine
             if ($targetCoords === false) {
                 $this->rollbackIfOpen();
                 Response::error('Zielsektor existiert nicht', 404);
+            }
+            // Defensiv: der Zielsektor muss zum selben Universum gehoeren wie die Basis des
+            // Spielers - die Karte liefert ab jetzt ohnehin nur noch das eigene Universum, aber
+            // ein direkt gepostetes targetSectorId aus einem anderen Universum darf trotzdem
+            // nicht durchkommen.
+            if ((int) $targetCoords['universe_id'] !== (int) $originCoords['universe_id']) {
+                $this->rollbackIfOpen();
+                Response::error('Zielsektor liegt in einem anderen Universum', 422);
             }
             $distance = sqrt((($targetCoords['x'] ?? 0) - ($originCoords['x'] ?? 0)) ** 2 + (($targetCoords['y'] ?? 0) - ($originCoords['y'] ?? 0)) ** 2);
 
@@ -1275,7 +1283,7 @@ final class GameEngine
      * sehen darf: eigene/fremde Basisnamen+Besitzer+Schutzstatus, NIE fremde Rohstoffe/Schiffe
      * (Advisor-Review-Fund).
      */
-    public function mapWindow(int $cx, int $cy, int $radius): array
+    public function mapWindow(int $universeId, int $cx, int $cy, int $radius): array
     {
         $radius = max(1, min(15, $radius));
         $minX = $cx - $radius;
@@ -1283,8 +1291,8 @@ final class GameEngine
         $minY = $cy - $radius;
         $maxY = $cy + $radius;
 
-        $sectorsStmt = $this->pdo->prepare('SELECT id, x, y FROM sectors WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?');
-        $sectorsStmt->execute([$minX, $maxX, $minY, $maxY]);
+        $sectorsStmt = $this->pdo->prepare('SELECT id, x, y FROM sectors WHERE universe_id = ? AND x BETWEEN ? AND ? AND y BETWEEN ? AND ?');
+        $sectorsStmt->execute([$universeId, $minX, $maxX, $minY, $maxY]);
         $sectors = $sectorsStmt->fetchAll();
         if ($sectors === []) {
             return ['sectors' => []];
@@ -1519,7 +1527,7 @@ final class GameEngine
     // dienstaelteste verbleibende Mitglied. Siehe Migration 006 fuer die Begruendung.
     // ============================================================
 
-    public function createAlliance(int $playerId, string $name, string $tag): array
+    public function createAlliance(int $playerId, int $universeId, string $name, string $tag): array
     {
         $name = trim($name);
         $tag = trim($tag);
@@ -1547,8 +1555,8 @@ final class GameEngine
             }
 
             try {
-                $this->pdo->prepare('INSERT INTO alliances (name, tag, leader_player_id) VALUES (?, ?, ?)')
-                    ->execute([$name, $tag, $playerId]);
+                $this->pdo->prepare('INSERT INTO alliances (universe_id, name, tag, leader_player_id) VALUES (?, ?, ?, ?)')
+                    ->execute([$universeId, $name, $tag, $playerId]);
             } catch (PDOException $e) {
                 $this->rollbackIfOpen();
                 Response::error('Name oder Tag bereits vergeben', 409);
@@ -1567,7 +1575,7 @@ final class GameEngine
         return $this->allianceInfo($playerId);
     }
 
-    public function joinAlliance(int $playerId, int $allianceId): array
+    public function joinAlliance(int $playerId, int $universeId, int $allianceId): array
     {
         $this->pdo->beginTransaction();
         try {
@@ -1584,7 +1592,7 @@ final class GameEngine
             $allianceStmt = $this->pdo->prepare('SELECT * FROM alliances WHERE id = ? FOR UPDATE');
             $allianceStmt->execute([$allianceId]);
             $alliance = $allianceStmt->fetch();
-            if ($alliance === false) {
+            if ($alliance === false || (int) $alliance['universe_id'] !== $universeId) {
                 $this->rollbackIfOpen();
                 Response::error('Allianz existiert nicht', 404);
             }
@@ -1690,15 +1698,18 @@ final class GameEngine
         return $this->allianceInfo($playerId);
     }
 
-    public function listAlliances(): array
+    public function listAlliances(int $universeId): array
     {
-        $rows = $this->pdo->query(
+        $stmt = $this->pdo->prepare(
             "SELECT a.id, a.name, a.tag, a.member_cap, p.username AS leader_name,
                     (SELECT COUNT(*) FROM alliance_members WHERE alliance_id = a.id) AS member_count
              FROM alliances a
              JOIN players p ON p.id = a.leader_player_id
+             WHERE a.universe_id = ?
              ORDER BY member_count DESC, a.name ASC"
-        )->fetchAll();
+        );
+        $stmt->execute([$universeId]);
+        $rows = $stmt->fetchAll();
 
         return ['alliances' => array_map(fn ($a) => [
             'id' => (int) $a['id'],

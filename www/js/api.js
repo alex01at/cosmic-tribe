@@ -3,18 +3,64 @@ const Api = (() => {
     const BASE_URL = window.STARFORGE_CONFIG.API_BASE_URL;
     let clockOffsetSeconds = 0; // serverNow - lokale Zeit, einmal pro Antwort aktualisiert
 
-    function getToken() {
+    // Tokens liegen als Map {universeId: token} unter EINEM Key, nicht mehr als einzelner
+    // sf_token - ein Gerät kann in mehreren Universen je einen eigenen Charakter haben, und jedes
+    // Universum braucht dafür seinen eigenen Token im selben Browser.
+    function getTokensMap() {
         try {
-            return localStorage.getItem('sf_token');
+            return JSON.parse(localStorage.getItem('sf_tokens') || '{}');
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function saveTokensMap(map) {
+        try {
+            localStorage.setItem('sf_tokens', JSON.stringify(map));
+        } catch (e) { /* privater Modus o.ä. - Session bleibt dann nur im Speicher */ }
+    }
+
+    function getActiveUniverse() {
+        try {
+            const id = localStorage.getItem('sf_active_universe');
+            return id ? parseInt(id, 10) : null;
         } catch (e) {
             return null;
         }
     }
 
-    function setToken(token) {
+    function setActiveUniverse(universeId) {
         try {
-            localStorage.setItem('sf_token', token);
-        } catch (e) { /* privater Modus o.ä. - Session bleibt dann nur im Speicher */ }
+            localStorage.setItem('sf_active_universe', String(universeId));
+        } catch (e) { /* ignore */ }
+    }
+
+    function clearActiveUniverse() {
+        try {
+            localStorage.removeItem('sf_active_universe');
+        } catch (e) { /* ignore */ }
+    }
+
+    function hasTokenFor(universeId) {
+        return !!getTokensMap()[universeId];
+    }
+
+    function getToken() {
+        const universeId = getActiveUniverse();
+        if (universeId === null) {
+            return null;
+        }
+        return getTokensMap()[universeId] || null;
+    }
+
+    function setToken(token) {
+        const universeId = getActiveUniverse();
+        if (universeId === null) {
+            return;
+        }
+        const map = getTokensMap();
+        map[universeId] = token;
+        saveTokensMap(map);
     }
 
     function getDeviceId() {
@@ -46,11 +92,17 @@ const Api = (() => {
         return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
 
+    // Löscht NUR den Token des aktuell aktiven Universums (z.B. nach 401, abgelaufener Token) -
+    // device_id und die Tokens anderer Universen bleiben erhalten, sonst würde ein ungültig
+    // gewordener Token in Welt A auch den Zugang zu Welt B kosten.
     function clearSession() {
-        try {
-            localStorage.removeItem('sf_token');
-            localStorage.removeItem('sf_device_id');
-        } catch (e) { /* ignore */ }
+        const universeId = getActiveUniverse();
+        if (universeId === null) {
+            return;
+        }
+        const map = getTokensMap();
+        delete map[universeId];
+        saveTokensMap(map);
     }
 
     async function call(method, path, body) {
@@ -108,6 +160,11 @@ const Api = (() => {
         getDeviceId,
         clearSession,
         serverNowEpoch,
+        getActiveUniverse,
+        setActiveUniverse,
+        clearActiveUniverse,
+        hasTokenFor,
+        listUniverses: () => call('GET', '/universes'),
     };
 })();
 

@@ -125,6 +125,28 @@ table.admin-table tr.group-header td {
     border-bottom: none;
 }
 
+.toggle-player-bases {
+    background: none;
+    border: none;
+    color: var(--accent);
+    padding: 2px 0;
+    font-size: 13px;
+    text-decoration: underline;
+}
+
+tr.player-bases-row td {
+    background: var(--bg-panel-raised);
+    padding: 10px 8px 14px 24px;
+}
+
+table.admin-table--nested {
+    width: auto;
+    min-width: 60%;
+}
+table.admin-table--nested input[type="number"] {
+    width: 90px;
+}
+
 .toast {
     position: fixed;
     bottom: 24px;

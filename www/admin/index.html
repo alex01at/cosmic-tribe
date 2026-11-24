@@ -22,22 +22,38 @@
   </header>
 
   <nav id="tab-nav">
-    <button class="tab-btn active" data-tab="settings">Einstellungen</button>
+    <button class="tab-btn active" data-tab="universes">Universen</button>
     <button class="tab-btn" data-tab="catalog">Katalog</button>
     <button class="tab-btn" data-tab="players">Spieler</button>
   </nav>
 
   <main id="tab-content">
-    <section id="tab-settings" class="tab-panel active">
+    <section id="tab-universes" class="tab-panel active">
       <div class="panel">
-        <h2>Spielgeschwindigkeit</h2>
-        <p class="hint">Skaliert Bauzeiten/Produktions-Ticks/Flugzeiten. 1 = Echtzeit, höher = schneller. Wirkt sofort, ohne Neustart des Servers.</p>
+        <h2>Neues Universum anlegen</h2>
+        <p class="hint">Legt eine komplett neue Galaxie an (eigene Sektoren, Spielerzahl-Obergrenze, Geschwindigkeit). Die Rastergröße lässt sich nach dem Anlegen nicht mehr ändern.</p>
         <div class="field-row">
-          <label>game_speed</label>
-          <input id="setting-game-speed" type="number" min="0.1" step="0.1">
-          <button class="btn primary" id="save-settings-btn">Speichern</button>
+          <label>Name</label>
+          <input id="new-universe-name" type="text" placeholder="z. B. Universum 2">
         </div>
-        <div id="settings-status" class="status-text"></div>
+        <div class="field-row">
+          <label>Max. Spieler</label>
+          <input id="new-universe-max-players" type="number" min="1" value="100">
+        </div>
+        <div class="field-row">
+          <label>Rastergröße</label>
+          <input id="new-universe-galaxy-size" type="number" min="5" max="60" value="20">
+        </div>
+        <div class="field-row">
+          <label>Geschwindigkeit</label>
+          <input id="new-universe-game-speed" type="number" min="0.1" step="0.1" value="1">
+          <button class="btn primary" id="create-universe-btn">Anlegen</button>
+        </div>
+        <div id="create-universe-status" class="status-text"></div>
+      </div>
+      <div class="panel">
+        <h2>Bestehende Universen</h2>
+        <div id="universes-table"></div>
       </div>
     </section>
 
@@ -55,6 +71,10 @@
     <section id="tab-players" class="tab-panel">
       <div class="panel">
         <h2>Spieler</h2>
+        <div class="field-row">
+          <label>Universum</label>
+          <select id="players-universe-filter"></select>
+        </div>
         <div id="players-table"></div>
       </div>
     </section>
