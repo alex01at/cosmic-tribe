@@ -381,6 +381,30 @@ final class GameEngine
 
         $this->applyLossRatioToFleet($fleet['id'], $combat['attackerLossRatio']);
 
+        // Verlust-Schnappschuss pro Schiffstyp fuers Kampfbericht-Frontend - dieselbe floor()-
+        // Rechnung wie applyLossRatio()/applyLossRatioToFleet(), damit die im Bericht gezeigten
+        // Stueckzahlen exakt zu dem passen, was tatsaechlich von der Flotte/Basis abgezogen wurde
+        // (keine separate, potenziell abweichende Rundung).
+        $shipLossSnapshot = static function (array $ships, float $lossRatio, bool $isNpc): array {
+            return array_map(fn ($s) => [
+                'name' => $isNpc ? 'NPC-Verteidigung' : $s['type']['name'],
+                'quantityBefore' => $s['quantity'],
+                'quantityLost' => $s['quantity'] - (int) floor($s['quantity'] * (1 - $lossRatio)),
+            ], $ships);
+        };
+        $reportData = [
+            'rounds' => $combat['rounds'],
+            'attacker' => [
+                'lossRatio' => $combat['attackerLossRatio'],
+                'ships' => $shipLossSnapshot($attackerShips, $combat['attackerLossRatio'], false),
+            ],
+            'defender' => [
+                'lossRatio' => $combat['defenderLossRatio'],
+                'isNpc' => $targetBase === false,
+                'ships' => $shipLossSnapshot($defenderShips, $combat['defenderLossRatio'], $targetBase === false),
+            ],
+        ];
+
         $this->pdo->prepare(
             'INSERT INTO combat_reports
                 (attacker_player_id, defender_player_id, sector_id, position, outcome, loot_titan, loot_deuterium, loot_credits, report_json)
@@ -388,7 +412,7 @@ final class GameEngine
         )->execute([
             $fleet['player_id'], $defenderPlayerId, $fleet['target_sector_id'], $fleet['target_position'],
             $combat['outcome'], $loot['titan'], $loot['deuterium'], $loot['credits'],
-            json_encode($combat['rounds']),
+            json_encode($reportData),
         ]);
 
         // Rückflug antreten - IMMER (auch bei Niederlage/Unentschieden, falls noch Schiffe übrig
@@ -1172,19 +1196,40 @@ final class GameEngine
             // und "neuester Bericht zuerst" nicht verlässlich (beim Testen gefunden: ein Report
             // mit 0 Beute erschien VOR einem mit echter Beute, weil beide zur selben Sekunde
             // aufgelöst wurden).
-            'SELECT * FROM combat_reports WHERE attacker_player_id = ? OR defender_player_id = ? ORDER BY resolved_at DESC, id DESC LIMIT 20'
+            'SELECT cr.*, s.x AS sector_x, s.y AS sector_y,
+                    pa.username AS attacker_name, pd.username AS defender_name
+             FROM combat_reports cr
+             JOIN sectors s ON s.id = cr.sector_id
+             JOIN players pa ON pa.id = cr.attacker_player_id
+             LEFT JOIN players pd ON pd.id = cr.defender_player_id
+             WHERE cr.attacker_player_id = ? OR cr.defender_player_id = ?
+             ORDER BY cr.resolved_at DESC, cr.id DESC LIMIT 20'
         );
         $reportsStmt->execute([$player['id'], $player['id']]);
-        $reports = array_map(fn ($r) => [
-            'id' => (int) $r['id'],
-            'attackerPlayerId' => (int) $r['attacker_player_id'],
-            'defenderPlayerId' => $r['defender_player_id'] !== null ? (int) $r['defender_player_id'] : null,
-            'outcome' => $r['outcome'],
-            'lootTitan' => (int) $r['loot_titan'],
-            'lootDeuterium' => (int) $r['loot_deuterium'],
-            'lootCredits' => (int) $r['loot_credits'],
-            'resolvedAtEpoch' => $this->toEpoch($r['resolved_at']),
-        ], $reportsStmt->fetchAll());
+        $reports = array_map(function ($r) {
+            // Aeltere Berichte (vor diesem Feature) haben report_json nur als rohes rounds-Array,
+            // nicht als {rounds, attacker, defender} - defensiv mit ?? abfedern statt Fehler.
+            $detail = json_decode($r['report_json'], true) ?: [];
+
+            return [
+                'id' => (int) $r['id'],
+                'attackerPlayerId' => (int) $r['attacker_player_id'],
+                'attackerName' => $r['attacker_name'],
+                'defenderPlayerId' => $r['defender_player_id'] !== null ? (int) $r['defender_player_id'] : null,
+                'defenderName' => $r['defender_name'],
+                'sectorX' => (int) $r['sector_x'],
+                'sectorY' => (int) $r['sector_y'],
+                'position' => (int) $r['position'],
+                'outcome' => $r['outcome'],
+                'lootTitan' => (int) $r['loot_titan'],
+                'lootDeuterium' => (int) $r['loot_deuterium'],
+                'lootCredits' => (int) $r['loot_credits'],
+                'resolvedAtEpoch' => $this->toEpoch($r['resolved_at']),
+                'rounds' => $detail['rounds'] ?? [],
+                'attacker' => $detail['attacker'] ?? null,
+                'defender' => $detail['defender'] ?? null,
+            ];
+        }, $reportsStmt->fetchAll());
 
         return [
             'serverNow' => time(),

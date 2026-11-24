@@ -51,9 +51,13 @@ const App = (() => {
     const PRESET_ICON = { weapons: '⚔️', shields: '🛡️', speed: '⚡' };
 
     function shipIconHtml(name) {
-        const role = SHIP_ROLE_BY_NAME[name] || 'fighter';
-        return `<div class="s-icon s-icon--${role}">${SHIP_ICON[role] || '●'}</div>`;
+        const role = name === 'NPC-Verteidigung' ? 'npc' : (SHIP_ROLE_BY_NAME[name] || 'fighter');
+        return `<div class="s-icon s-icon--${role}">${role === 'npc' ? '👾' : (SHIP_ICON[role] || '●')}</div>`;
     }
+
+    // Welche Kampfberichte gerade aufgeklappt sind (Report-ID -> true) - ueberlebt renderAll()
+    // (Poll alle 25s), sonst wuerde jede Liste beim naechsten Stand wieder einklappen.
+    const expandedReports = new Set();
 
     function $(id) { return document.getElementById(id); }
 
@@ -610,20 +614,83 @@ const App = (() => {
     // Berichte
     // ============================================================
     function renderReports() {
-        const base = currentBase();
         $('reports-list').innerHTML = state.combatReports.length
-            ? state.combatReports.map(r => {
-                const isAttacker = r.attackerPlayerId === state.player.id;
-                const ago = Api.serverNowEpoch() - r.resolvedAtEpoch;
-                return `
-                <div class="queue-row">
-                    <div class="row-main">
-                        <div class="row-title outcome-${r.outcome}">${isAttacker ? 'Angriff gesendet' : 'Basis angegriffen'} - ${Format.outcomeLabel(r.outcome)}</div>
-                        <div class="row-sub">Beute: ${Format.number(r.lootTitan)} Titan, ${Format.number(r.lootDeuterium)} Deut., ${Format.number(r.lootCredits)} Cr. · vor ${Format.duration(ago)}</div>
-                    </div>
-                </div>`;
-            }).join('')
+            ? state.combatReports.map(r => reportRowHtml(r)).join('')
             : '<p class="row-sub">Noch keine Kampfberichte.</p>';
+
+        document.querySelectorAll('[data-report-toggle]').forEach(row => {
+            row.addEventListener('click', () => {
+                const id = parseInt(row.dataset.reportToggle, 10);
+                if (expandedReports.has(id)) expandedReports.delete(id); else expandedReports.add(id);
+                renderReports();
+            });
+        });
+    }
+
+    function reportRowHtml(r) {
+        const isAttacker = r.attackerPlayerId === state.player.id;
+        const opponent = isAttacker
+            ? (r.defenderName ? Format.escapeHtml(r.defenderName) : 'NPC-Außenposten')
+            : Format.escapeHtml(r.attackerName);
+        const ago = Api.serverNowEpoch() - r.resolvedAtEpoch;
+        const expanded = expandedReports.has(r.id);
+
+        return `
+        <div class="queue-row battle-report">
+            <div class="s-icon s-icon--mission">${MISSION_ICON.attack}</div>
+            <div class="row-main" data-report-toggle="${r.id}" style="cursor:pointer;">
+                <div class="row-title outcome-${r.outcome}">${isAttacker ? 'Angriff auf' : 'Verteidigung gegen'} ${opponent}</div>
+                <div class="row-sub">${Format.outcomeLabel(r.outcome)} · Sektor ${r.sectorX}:${r.sectorY}, Slot ${r.position} · vor ${Format.duration(ago)}</div>
+                <div class="row-sub">Beute: ${Format.number(r.lootTitan)} Titan, ${Format.number(r.lootDeuterium)} Deut., ${Format.number(r.lootCredits)} Cr.</div>
+            </div>
+            <div class="battle-expand-arrow${expanded ? ' open' : ''}" data-report-toggle="${r.id}" style="cursor:pointer;">▾</div>
+        </div>
+        ${expanded ? battlePanelHtml(r) : ''}`;
+    }
+
+    function battlePanelHtml(r) {
+        const rounds = r.rounds || [];
+        const attacker = r.attacker;
+        const defender = r.defender;
+
+        const baselineAttacker = rounds.length ? rounds[0].attackerHullRemaining + rounds[0].damageToAttackerHull : 0;
+        const baselineDefender = rounds.length ? rounds[0].defenderHullRemaining + rounds[0].damageToDefenderHull : 0;
+
+        const roundsHtml = rounds.length
+            ? rounds.map(rd => `
+                <div class="battle-round">
+                    <div class="battle-round-label">Runde ${rd.round}</div>
+                    <div class="battle-hp-track"><div class="battle-hp-fill battle-hp-fill--attacker" style="width:${baselineAttacker > 0 ? Math.max(0, 100 * rd.attackerHullRemaining / baselineAttacker) : 0}%;"></div></div>
+                    <div class="battle-hp-track"><div class="battle-hp-fill battle-hp-fill--defender" style="width:${baselineDefender > 0 ? Math.max(0, 100 * rd.defenderHullRemaining / baselineDefender) : 0}%;"></div></div>
+                </div>`).join('')
+            : '<p class="row-sub">Keine Kampfrunden - eine Seite hatte keine Schiffe.</p>';
+
+        return `
+        <div class="panel battle-panel" style="margin:0 0 12px 0;">
+            <div class="battle-sides">
+                <div class="battle-side">
+                    <div class="row-sub">Angreifer${attacker ? ` · ${Math.round(attacker.lossRatio * 100)}% Verluste` : ''}</div>
+                    ${shipLossListHtml(attacker)}
+                </div>
+                <div class="battle-side">
+                    <div class="row-sub">Verteidiger${defender ? ` · ${Math.round(defender.lossRatio * 100)}% Verluste` : ''}</div>
+                    ${shipLossListHtml(defender)}
+                </div>
+            </div>
+            <div class="battle-rounds">${roundsHtml}</div>
+        </div>`;
+    }
+
+    function shipLossListHtml(side) {
+        if (!side || !side.ships.length) return '<p class="row-sub">-</p>';
+        return side.ships.map(s => `
+            <div class="battle-ship-row">
+                ${shipIconHtml(s.name)}
+                <div class="row-main">
+                    <div class="row-title">${Format.escapeHtml(s.name)}</div>
+                    <div class="row-sub">${s.quantityBefore - s.quantityLost} / ${s.quantityBefore}${s.quantityLost > 0 ? ` <span class="insufficient">(-${s.quantityLost})</span>` : ''}</div>
+                </div>
+            </div>`).join('');
     }
 
     // ============================================================
