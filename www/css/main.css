@@ -128,15 +128,49 @@ button {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 0;
+    padding: 10px 0;
     border-bottom: 1px solid var(--border);
-    gap: 8px;
+    gap: 10px;
 }
 .building-row:last-child, .ship-row:last-child, .queue-row:last-child { border-bottom: none; }
 
 .row-main { flex: 1; min-width: 0; }
 .row-title { font-weight: 600; font-size: 14px; }
 .row-sub { font-size: 12px; color: var(--text-dim); }
+
+.lvl-pill {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--bg-panel-raised);
+    border-radius: 20px;
+    padding: 1px 8px;
+    margin-left: 4px;
+    white-space: nowrap;
+}
+
+/* Gebäude-Icon-Badge - ein Effekt pro Gebäudetyp bekommt eine eigene Glühfarbe, damit die
+   Basis-Liste auch ohne Text als Silhouette erkennbar ist (dieselbe Sprache wie die neuen
+   Marker auf der Weltkarte: Farbe + Form statt nur Punkte). */
+.b-icon {
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+}
+.b-icon--command { box-shadow: inset 0 0 0 1px rgba(79,195,247,0.4); background: radial-gradient(circle, rgba(79,195,247,0.16), var(--bg-panel-raised)); }
+.b-icon--titan_production { box-shadow: inset 0 0 0 1px rgba(159,184,216,0.4); background: radial-gradient(circle, rgba(159,184,216,0.16), var(--bg-panel-raised)); }
+.b-icon--deuterium_production { box-shadow: inset 0 0 0 1px rgba(79,195,247,0.4); background: radial-gradient(circle, rgba(79,195,247,0.16), var(--bg-panel-raised)); }
+.b-icon--shipyard { box-shadow: inset 0 0 0 1px rgba(255,167,38,0.4); background: radial-gradient(circle, rgba(255,167,38,0.16), var(--bg-panel-raised)); }
+.b-icon--shield { box-shadow: inset 0 0 0 1px rgba(139,108,255,0.5); background: radial-gradient(circle, rgba(139,108,255,0.18), var(--bg-panel-raised)); }
+.b-icon--sensor { box-shadow: inset 0 0 0 1px rgba(102,187,106,0.4); background: radial-gradient(circle, rgba(102,187,106,0.16), var(--bg-panel-raised)); }
+.b-icon--hangar, .b-icon--queued { box-shadow: inset 0 0 0 1px var(--border); }
 
 .btn {
     border: 1px solid var(--accent-dim);
@@ -160,9 +194,24 @@ button {
     border-radius: 3px;
     background: var(--bg-panel-raised);
     overflow: hidden;
-    margin-top: 4px;
+    margin: 5px 0 3px;
 }
-.progress-bar .fill { height: 100%; background: var(--accent); }
+.progress-bar .fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    transition: width 0.4s ease;
+}
+
+.base-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-bottom: 10px;
+}
+.base-header h2 { margin: 0; }
+.base-header .row-sub { font-size: 12px; }
 
 .outcome-attacker_win { color: var(--success); }
 .outcome-defender_win { color: var(--danger); }

@@ -14,6 +14,22 @@ const App = (() => {
     const POLL_INTERVAL_NORMAL = 25000;
     const POLL_INTERVAL_OFFLINE = 60000; // Backoff - kein Sinn, alle 25s gegen einen toten Server zu rennen
 
+    // Icon je Gebäude-Effekt (Katalog ist fest, 7 Typen - siehe building_types in Migration 002).
+    const BUILDING_ICON = {
+        command: '🛰️', titan_production: '⛏️', deuterium_production: '🛢️',
+        shipyard: '⚙️', shield: '🛡️', sensor: '📡', hangar: '📦',
+    };
+    // Bau-Warteschlange liefert nur den Namen, kein effect-Feld - fester Katalog, daher sicher.
+    const BUILDING_ICON_BY_NAME = {
+        'Kommandobrücke': BUILDING_ICON.command,
+        'Titan-Raffinerie': BUILDING_ICON.titan_production,
+        'Deuterium-Sammler': BUILDING_ICON.deuterium_production,
+        'Werft': BUILDING_ICON.shipyard,
+        'Schildgenerator': BUILDING_ICON.shield,
+        'Langstreckensensor': BUILDING_ICON.sensor,
+        'Hangar': BUILDING_ICON.hangar,
+    };
+
     function $(id) { return document.getElementById(id); }
 
     function errorToast(e, fallback) {
@@ -237,14 +253,19 @@ const App = (() => {
         const base = currentBase();
         if (!base) return;
         $('base-name').textContent = base.name;
+        const protectedLabel = base.protectedUntil && base.protectedUntil > Api.serverNowEpoch()
+            ? ` · 🛡️ Schutz noch ${Format.duration(base.protectedUntil - Api.serverNowEpoch())}`
+            : '';
+        $('base-subtitle').textContent = `Sektor ${base.sectorX}:${base.sectorY}${protectedLabel}`;
         renderResourceBar();
 
         $('base-buildings').innerHTML = base.buildings.map(b => buildingRowHtml(base, b)).join('');
         $('base-queue').innerHTML = base.buildQueue.length
             ? base.buildQueue.map(q => `
                 <div class="queue-row">
+                    <div class="b-icon b-icon--queued">${BUILDING_ICON_BY_NAME[q.buildingName] || '●'}</div>
                     <div class="row-main">
-                        <div class="row-title">${Format.escapeHtml(q.buildingName)} &rarr; Lv. ${q.targetLevel}</div>
+                        <div class="row-title">${Format.escapeHtml(q.buildingName)} <span class="lvl-pill">&rarr; Lv. ${q.targetLevel}</span></div>
                         <div class="row-sub">${Format.number(q.costTitanPaid)} Titan, ${Format.number(q.costDeuteriumPaid)} Deut. bezahlt</div>
                     </div>
                 </div>`).join('') + `<button class="btn danger" id="cancel-build-btn" style="margin-top:8px;">Letzten Auftrag stornieren (Rückerstattung)</button>`
@@ -258,15 +279,24 @@ const App = (() => {
         });
     }
 
+    function buildingIconHtml(effect) {
+        return `<div class="b-icon b-icon--${effect}">${BUILDING_ICON[effect] || '●'}</div>`;
+    }
+
     function buildingRowHtml(base, b) {
         if (b.status === 'building') {
-            const total = b.secondsRemaining; // Annäherung für die Balkenbreite, reicht optisch
+            // b.nextLevel ist auch WÄHREND des Baus gesetzt (der Level, der gerade entsteht) -
+            // dessen buildSeconds ist die GESAMTdauer, daraus ergibt sich der echte Fortschritt
+            // statt der vorher fest verdrahteten 40%.
+            const totalSeconds = b.nextLevel ? b.nextLevel.buildSeconds : b.secondsRemaining;
+            const pct = totalSeconds > 0 ? Math.max(0, Math.min(100, 100 * (1 - b.secondsRemaining / totalSeconds))) : 100;
             return `
                 <div class="building-row">
+                    ${buildingIconHtml(b.effect)}
                     <div class="row-main">
-                        <div class="row-title">${Format.escapeHtml(b.name)} <span class="row-sub">Lv. ${b.level} &rarr; ${b.level + 1}</span></div>
+                        <div class="row-title">${Format.escapeHtml(b.name)} <span class="lvl-pill">Lv. ${b.level} &rarr; ${b.level + 1}</span></div>
+                        <div class="progress-bar"><div class="fill" style="width:${pct.toFixed(0)}%"></div></div>
                         <div class="row-sub">Fertig in ${Format.duration(b.secondsRemaining)}</div>
-                        <div class="progress-bar"><div class="fill" style="width:40%"></div></div>
                     </div>
                 </div>`;
         }
@@ -274,6 +304,7 @@ const App = (() => {
         if (!b.nextLevel) {
             return `
                 <div class="building-row">
+                    ${buildingIconHtml(b.effect)}
                     <div class="row-main"><div class="row-title">${Format.escapeHtml(b.name)}</div><div class="row-sub">Lv. ${b.level} (Maximum erreicht)</div></div>
                 </div>`;
         }
@@ -285,8 +316,9 @@ const App = (() => {
 
         return `
             <div class="building-row">
+                ${buildingIconHtml(b.effect)}
                 <div class="row-main">
-                    <div class="row-title">${Format.escapeHtml(b.name)} <span class="row-sub">Lv. ${b.level} &rarr; ${nl.level}</span></div>
+                    <div class="row-title">${Format.escapeHtml(b.name)} <span class="lvl-pill">Lv. ${b.level} &rarr; ${nl.level}</span></div>
                     <div class="cost-line ${affordable ? '' : 'insufficient'}">
                         ${Format.number(nl.costTitan)} Titan · ${Format.number(nl.costDeuterium)} Deut.${nl.costCredits ? ' · ' + Format.number(nl.costCredits) + ' Cr.' : ''} · ${Format.duration(nl.buildSeconds)}
                     </div>
