@@ -25,6 +25,7 @@
     <button class="tab-btn active" data-tab="universes">Universen</button>
     <button class="tab-btn" data-tab="catalog">Katalog</button>
     <button class="tab-btn" data-tab="players">Spieler</button>
+    <button class="tab-btn" data-tab="log">Log</button>
   </nav>
 
   <main id="tab-content">
@@ -81,6 +82,27 @@
           <select id="players-universe-filter"></select>
         </div>
         <div id="players-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-log" class="tab-panel">
+      <div class="panel">
+        <h2>Ereignis-Log</h2>
+        <p class="hint">Spieler-Ereignisse (Registrierung, Allianzen, Angriffe/Plünderungen, Kolonisierung) und technische Fehler.</p>
+        <div class="field-row">
+          <label>Kategorie</label>
+          <select id="log-category-filter">
+            <option value="">Alle</option>
+            <option value="register">Registrierung</option>
+            <option value="alliance">Allianz</option>
+            <option value="combat">Angriff/Plünderung</option>
+            <option value="colonize">Kolonisierung</option>
+            <option value="error">Fehler</option>
+          </select>
+          <input id="log-search" type="text" placeholder="Suche in Nachricht...">
+          <button class="btn primary" id="log-search-btn">Suchen</button>
+        </div>
+        <div id="log-table"></div>
       </div>
     </section>
   </main>

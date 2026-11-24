@@ -24,6 +24,7 @@ require __DIR__ . '/../src/AdminEngine.php';
 require __DIR__ . '/../src/CombatResolver.php';
 require __DIR__ . '/../src/GameEngine.php';
 require __DIR__ . '/../src/GalaxyGenerator.php';
+require __DIR__ . '/../src/EventLog.php';
 
 $pdo = Database::connection();
 $config = require __DIR__ . '/../config/config.php';
@@ -220,6 +221,14 @@ $router->get('/api/admin/players/bases', function () use ($pdo, $adminEngine) {
     Response::json(['bases' => $adminEngine->getPlayerBases($playerId)]);
 });
 
+$router->get('/api/admin/log', function () use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $category = isset($_GET['category']) && $_GET['category'] !== '' ? (string) $_GET['category'] : null;
+    $query = isset($_GET['q']) && $_GET['q'] !== '' ? (string) $_GET['q'] : null;
+    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 100;
+    Response::json($adminEngine->searchEventLog($category, $query, $limit));
+});
+
 $router->post('/api/admin/bases/update', function (array $body) use ($pdo, $adminEngine) {
     AdminAuth::requireAdmin($pdo);
     $baseId = (int) ($body['baseId'] ?? 0);
@@ -229,4 +238,18 @@ $router->post('/api/admin/bases/update', function (array $body) use ($pdo, $admi
 });
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$router->dispatch($_SERVER['REQUEST_METHOD'], $path);
+
+try {
+    $router->dispatch($_SERVER['REQUEST_METHOD'], $path);
+} catch (Throwable $e) {
+    // Response::error()/Response::json() beenden den Request ueber exit() - sie werfen nie,
+    // landen also NIE hier. Was hier ankommt, ist eine echte, nicht vorgesehene Exception
+    // (Bug, DB-Fehler, ...) - fuers Admin-Panel-Log mitschneiden, dem Client aber keine internen
+    // Details preisgeben. Falls die Exception mitten in einer offenen Transaktion geworfen wurde,
+    // die NIEMAND sonst mehr zurueckrollt, erst aufraeumen, bevor hier geloggt wird.
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    EventLog::log($pdo, 'error', "[{$_SERVER['REQUEST_METHOD']} {$path}] " . get_class($e) . ': ' . $e->getMessage() . ' in ' . basename($e->getFile()) . ':' . $e->getLine());
+    Response::error('Interner Serverfehler', 500);
+}

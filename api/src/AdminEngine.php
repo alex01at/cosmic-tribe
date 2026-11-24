@@ -330,4 +330,42 @@ final class AdminEngine
             throw $e;
         }
     }
+
+    // --- Ereignis-Log -----------------------------------------------------
+
+    /** @return array{entries: array, total: int} */
+    public function searchEventLog(?string $category, ?string $query, int $limit): array
+    {
+        $limit = max(1, min(500, $limit));
+        $where = [];
+        $params = [];
+
+        if ($category !== null && $category !== '') {
+            $where[] = 'category = ?';
+            $params[] = $category;
+        }
+        if ($query !== null && trim($query) !== '') {
+            $where[] = 'message LIKE ?';
+            $params[] = '%' . trim($query) . '%';
+        }
+        $whereSql = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
+
+        $countStmt = $this->pdo->prepare("SELECT COUNT(*) FROM event_log $whereSql");
+        $countStmt->execute($params);
+        $total = (int) $countStmt->fetchColumn();
+
+        $stmt = $this->pdo->prepare("SELECT * FROM event_log $whereSql ORDER BY id DESC LIMIT $limit");
+        $stmt->execute($params);
+
+        return [
+            'entries' => array_map(fn ($r) => [
+                'id' => (int) $r['id'],
+                'universeId' => $r['universe_id'] !== null ? (int) $r['universe_id'] : null,
+                'category' => $r['category'],
+                'message' => $r['message'],
+                'createdAt' => $r['created_at'],
+            ], $stmt->fetchAll()),
+            'total' => $total,
+        ];
+    }
 }

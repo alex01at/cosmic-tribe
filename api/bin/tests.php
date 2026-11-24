@@ -20,6 +20,7 @@ const BASE_URL = 'http://127.0.0.1:8199';
 $pdo = Database::connection();
 $createdDeviceIds = [];
 $failures = 0;
+$testRunStartedAt = $pdo->query('SELECT UTC_TIMESTAMP()')->fetchColumn();
 
 function apiCall(string $method, string $path, ?array $body = null, ?string $token = null): array
 {
@@ -751,6 +752,11 @@ if ($playerIds !== []) {
     $pdo->prepare("DELETE FROM user_tokens WHERE player_id IN ($idPh)")->execute($playerIds);
     $pdo->prepare("DELETE FROM players WHERE id IN ($idPh)")->execute($playerIds);
 }
+
+// Jeder Testlauf erzeugt zwangsläufig Ereignis-Log-Einträge (Registrierungen, Allianzen,
+// Angriffe, ggf. erwartete Deadlock-Fehler aus den Race-Condition-Tests) - die sollen nicht im
+// echten Admin-Panel-Log des Betreibers aufschlagen.
+$pdo->prepare('DELETE FROM event_log WHERE created_at >= ?')->execute([$testRunStartedAt]);
 
 // Durch Kolonisierung/Tests ggf. verbrauchte oder neu entstandene Test-Artefakte: neu
 // kolonisierte Basen OHNE player_id-Match (sollten keine mehr übrig sein, s.o.) - defensiv keine

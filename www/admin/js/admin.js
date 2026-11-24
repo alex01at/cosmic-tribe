@@ -60,6 +60,7 @@ const AdminApp = (() => {
         $('dashboard').classList.remove('hidden');
         loadUniverses();
         loadCatalog();
+        loadEventLog();
     }
 
     async function login() {
@@ -386,6 +387,45 @@ const AdminApp = (() => {
         });
     }
 
+    // --- Ereignis-Log -----------------------------------------------------
+    const CATEGORY_LABEL = {
+        register: 'Registrierung',
+        alliance: 'Allianz',
+        combat: 'Angriff/Plünderung',
+        colonize: 'Kolonisierung',
+        error: 'Fehler',
+    };
+
+    async function loadEventLog() {
+        try {
+            const category = $('log-category-filter').value;
+            const q = $('log-search').value.trim();
+            const params = new URLSearchParams();
+            if (category) params.set('category', category);
+            if (q) params.set('q', q);
+            const res = await api('GET', '/admin/log?' + params.toString());
+            renderEventLog(res.entries, res.total);
+        } catch (e) { showToast(e.message); }
+    }
+
+    function renderEventLog(entries, total) {
+        const rows = entries.length
+            ? entries.map(e => `
+                <tr class="log-row log-row--${e.category}">
+                    <td>${escapeHtml(e.createdAt)}</td>
+                    <td>${escapeHtml(CATEGORY_LABEL[e.category] || e.category)}</td>
+                    <td>${escapeHtml(e.message)}</td>
+                </tr>`).join('')
+            : `<tr><td colspan="3">Keine Einträge.</td></tr>`;
+
+        $('log-table').innerHTML = `
+            <p class="hint">${entries.length} von ${total} Einträgen angezeigt (neueste zuerst).</p>
+            <table class="admin-table">
+                <thead><tr><th>Zeitpunkt (UTC)</th><th>Kategorie</th><th>Nachricht</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+    }
+
     function initTabs() {
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -403,6 +443,9 @@ const AdminApp = (() => {
         $('logout-btn').addEventListener('click', logout);
         $('create-universe-btn').addEventListener('click', createUniverse);
         $('players-universe-filter').addEventListener('change', loadPlayers);
+        $('log-search-btn').addEventListener('click', loadEventLog);
+        $('log-category-filter').addEventListener('change', loadEventLog);
+        $('log-search').addEventListener('keydown', e => { if (e.key === 'Enter') loadEventLog(); });
         initTabs();
 
         if (getToken()) showDashboard(); else showLogin();

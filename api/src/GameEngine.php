@@ -278,6 +278,16 @@ final class GameEngine
                 }
 
                 $succeeded = true;
+
+                $sectorStmt = $this->pdo->prepare('SELECT x, y, universe_id FROM sectors WHERE id = ?');
+                $sectorStmt->execute([$fleet['target_sector_id']]);
+                $sector = $sectorStmt->fetch();
+                EventLog::log(
+                    $this->pdo,
+                    'colonize',
+                    "„{$username}“ hat Sektor {$sector['x']}:{$sector['y']}, Slot {$fleet['target_position']} kolonisiert.",
+                    (int) $sector['universe_id']
+                );
             } catch (PDOException $e) {
                 // UNIQUE(sector_id, position) hat zugeschlagen - ein paralleler Kolonisierungs-
                 // versuch war schneller. Kolonieschiff gilt trotzdem als verbraucht (siehe unten).
@@ -1212,6 +1222,16 @@ final class GameEngine
             }
 
             $this->pdo->commit();
+
+            if ($mission === 'attack' || $mission === 'plunder') {
+                $missionLabel = $mission === 'attack' ? 'Angriff' : 'Plünderung';
+                EventLog::log(
+                    $this->pdo,
+                    'combat',
+                    "{$missionLabel}: „{$this->playerUsername($playerId)}“ -> Sektor {$targetCoords['x']}:{$targetCoords['y']}, Slot {$targetPosition}.",
+                    (int) $targetCoords['universe_id']
+                );
+            }
         } catch (Throwable $e) {
             $this->rollbackIfOpen();
             throw $e;
@@ -1721,12 +1741,22 @@ final class GameEngine
                 ->execute([$allianceId, $playerId]);
 
             $this->pdo->commit();
+
+            EventLog::log($this->pdo, 'alliance', "„{$this->playerUsername($playerId)}“ hat die Allianz „{$name}“ [{$tag}] gegründet.", $universeId);
         } catch (Throwable $e) {
             $this->rollbackIfOpen();
             throw $e;
         }
 
         return $this->allianceInfo($playerId);
+    }
+
+    private function playerUsername(int $playerId): string
+    {
+        $stmt = $this->pdo->prepare('SELECT username FROM players WHERE id = ?');
+        $stmt->execute([$playerId]);
+
+        return (string) ($stmt->fetchColumn() ?: "Spieler #{$playerId}");
     }
 
     public function joinAlliance(int $playerId, int $universeId, int $allianceId): array
@@ -1762,6 +1792,8 @@ final class GameEngine
                 ->execute([$allianceId, $playerId]);
 
             $this->pdo->commit();
+
+            EventLog::log($this->pdo, 'alliance', "„{$this->playerUsername($playerId)}“ ist der Allianz „{$alliance['name']}“ beigetreten.", $universeId);
         } catch (Throwable $e) {
             $this->rollbackIfOpen();
             throw $e;
@@ -1775,7 +1807,7 @@ final class GameEngine
         $this->pdo->beginTransaction();
         try {
             $memberStmt = $this->pdo->prepare(
-                'SELECT am.*, a.leader_player_id FROM alliance_members am
+                'SELECT am.*, a.leader_player_id, a.name AS alliance_name, a.universe_id FROM alliance_members am
                  JOIN alliances a ON a.id = am.alliance_id WHERE am.player_id = ? FOR UPDATE'
             );
             $memberStmt->execute([$playerId]);
@@ -1807,6 +1839,8 @@ final class GameEngine
             }
 
             $this->pdo->commit();
+
+            EventLog::log($this->pdo, 'alliance', "„{$this->playerUsername($playerId)}“ hat die Allianz „{$membership['alliance_name']}“ verlassen.", (int) $membership['universe_id']);
         } catch (Throwable $e) {
             $this->rollbackIfOpen();
             throw $e;
@@ -1824,7 +1858,7 @@ final class GameEngine
         $this->pdo->beginTransaction();
         try {
             $leaderStmt = $this->pdo->prepare(
-                'SELECT a.id, a.leader_player_id FROM alliance_members am
+                'SELECT a.id, a.leader_player_id, a.name AS alliance_name, a.universe_id FROM alliance_members am
                  JOIN alliances a ON a.id = am.alliance_id WHERE am.player_id = ? FOR UPDATE'
             );
             $leaderStmt->execute([$playerId]);
@@ -1844,6 +1878,13 @@ final class GameEngine
             $this->pdo->prepare('DELETE FROM alliance_members WHERE player_id = ?')->execute([$targetPlayerId]);
 
             $this->pdo->commit();
+
+            EventLog::log(
+                $this->pdo,
+                'alliance',
+                "„{$this->playerUsername($playerId)}“ hat „{$this->playerUsername($targetPlayerId)}“ aus der Allianz „{$alliance['alliance_name']}“ entfernt.",
+                (int) $alliance['universe_id']
+            );
         } catch (Throwable $e) {
             $this->rollbackIfOpen();
             throw $e;

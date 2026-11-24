@@ -106,6 +106,8 @@ final class Auth
                 ->execute([$baseId]);
 
             $pdo->commit();
+
+            EventLog::log($pdo, 'register', "Neuer Spieler „{$username}“ registriert.", $universeId);
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();

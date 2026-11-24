@@ -165,3 +165,7 @@ table.admin-table--nested input[type="number"] {
     text-align: center;
 }
 .toast.visible { opacity: 1; }
+
+#log-search { flex: 1; min-width: 160px; }
+tr.log-row--error td:nth-child(2) { color: var(--danger); font-weight: 600; }
+tr.log-row--error { background: rgba(239, 83, 80, 0.08); }
