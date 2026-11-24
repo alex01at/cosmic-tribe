@@ -172,6 +172,34 @@ button {
 .b-icon--sensor { box-shadow: inset 0 0 0 1px rgba(102,187,106,0.4); background: radial-gradient(circle, rgba(102,187,106,0.16), var(--bg-panel-raised)); }
 .b-icon--hangar, .b-icon--queued { box-shadow: inset 0 0 0 1px var(--border); }
 
+/* Schiffs-Icon-Badge - dieselbe Sprache wie .b-icon, Farben passend zu den Kartenmarkern
+   (Gold = Fracht, Grün = Kolonie, Rot = Kampf), damit Flottentab und Weltkarte zusammenpassen. */
+.s-icon {
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+}
+.s-icon--scout { box-shadow: inset 0 0 0 1px rgba(79,216,255,0.45); background: radial-gradient(circle, rgba(79,216,255,0.16), var(--bg-panel-raised)); }
+.s-icon--fighter { box-shadow: inset 0 0 0 1px rgba(255,167,38,0.45); background: radial-gradient(circle, rgba(255,167,38,0.16), var(--bg-panel-raised)); }
+.s-icon--cruiser { box-shadow: inset 0 0 0 1px rgba(255,92,92,0.45); background: radial-gradient(circle, rgba(255,92,92,0.16), var(--bg-panel-raised)); }
+.s-icon--transporter { box-shadow: inset 0 0 0 1px rgba(232,163,61,0.45); background: radial-gradient(circle, rgba(232,163,61,0.16), var(--bg-panel-raised)); }
+.s-icon--colonizer { box-shadow: inset 0 0 0 1px rgba(107,217,138,0.45); background: radial-gradient(circle, rgba(107,217,138,0.16), var(--bg-panel-raised)); }
+.s-icon--flagship { box-shadow: inset 0 0 0 1px rgba(154,107,255,0.5); background: radial-gradient(circle, rgba(154,107,255,0.18), var(--bg-panel-raised)); }
+.s-icon--mission { box-shadow: inset 0 0 0 1px var(--border); }
+
+.stat-line {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 3px;
+}
+
 .btn {
     border: 1px solid var(--accent-dim);
     background: transparent;

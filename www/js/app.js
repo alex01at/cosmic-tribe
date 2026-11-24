@@ -30,6 +30,31 @@ const App = (() => {
         'Hangar': BUILDING_ICON.hangar,
     };
 
+    // Schiffstyp -> Rolle+Icon, feste Katalogliste (sechs Typen + Flaggschiff, siehe
+    // ship_types in Migration 002). Dieselbe Farbe+Form-Sprache wie die Kartenmarker in map.js
+    // (Gold = Fracht, Grün = friedlich/Kolonie, Rot = Kampf), damit Karte und Flottentab zusammenpassen.
+    const SHIP_ROLE_BY_NAME = {
+        'Scout': 'scout',
+        'Abfangjäger': 'fighter',
+        'Kreuzer': 'cruiser',
+        'Transporter': 'transporter',
+        'Kolonieschiff': 'colonizer',
+        'Flaggschiff': 'flagship',
+    };
+    const SHIP_ICON = {
+        scout: '🔭', fighter: '⚡', cruiser: '☄️',
+        transporter: '📦', colonizer: '🌱', flagship: '👑',
+    };
+    const MISSION_ICON = {
+        attack: '⚔️', plunder: '💰', station: '📍', transport: '📦', colonize: '🌱',
+    };
+    const PRESET_ICON = { weapons: '⚔️', shields: '🛡️', speed: '⚡' };
+
+    function shipIconHtml(name) {
+        const role = SHIP_ROLE_BY_NAME[name] || 'fighter';
+        return `<div class="s-icon s-icon--${role}">${SHIP_ICON[role] || '●'}</div>`;
+    }
+
     function $(id) { return document.getElementById(id); }
 
     function errorToast(e, fallback) {
@@ -364,9 +389,11 @@ const App = (() => {
                 const locked = shipyardLevel < s.minShipyardLevel;
                 return `
                 <div class="ship-row">
+                    ${shipIconHtml(s.name)}
                     <div class="row-main">
                         <div class="row-title">${Format.escapeHtml(s.name)}</div>
                         <div class="row-sub">${Format.escapeHtml(s.description)}</div>
+                        <div class="stat-line">${shipStatsHtml(s)}</div>
                         <div class="cost-line">${Format.number(s.costTitan)} Titan · ${Format.number(s.costDeuterium)} Deut.${s.costCredits ? ' · ' + Format.number(s.costCredits) + ' Cr.' : ''} · ${Format.duration(s.buildSeconds)}/Stk.</div>
                         ${locked ? `<div class="cost-line insufficient">Benötigt Werft-Level ${s.minShipyardLevel}</div>` : ''}
                     </div>
@@ -379,19 +406,33 @@ const App = (() => {
         });
 
         $('shipyard-queue').innerHTML = base.shipQueue.length
-            ? base.shipQueue.map(q => `
+            ? base.shipQueue.map(q => {
+                const type = state.catalog.shipTypes.find(s => s.name === q.shipName);
+                const totalSeconds = type ? type.buildSeconds : 0;
+                const pct = q.active && totalSeconds > 0
+                    ? Math.max(0, Math.min(100, 100 * (1 - q.secondsRemainingForNextUnit / totalSeconds)))
+                    : 0;
+                return `
                 <div class="queue-row">
+                    ${shipIconHtml(q.shipName)}
                     <div class="row-main">
                         <div class="row-title">${Format.escapeHtml(q.shipName)} &times; ${q.quantity}</div>
                         <div class="row-sub">${q.active ? `Nächste Einheit in ${Format.duration(q.secondsRemainingForNextUnit)}` : 'Wartet'}</div>
+                        <div class="progress-bar"><div class="fill" style="width:${pct}%;"></div></div>
                     </div>
-                </div>`).join('') + `<button class="btn danger" id="cancel-ship-btn" style="margin-top:8px;">Letzten Auftrag stornieren</button>`
+                </div>`;
+            }).join('') + `<button class="btn danger" id="cancel-ship-btn" style="margin-top:8px;">Letzten Auftrag stornieren</button>`
             : '';
         const cancelShipBtn = $('cancel-ship-btn');
         if (cancelShipBtn) cancelShipBtn.addEventListener('click', cancelShip);
 
         $('hangar-list').innerHTML = base.ships.length
-            ? base.ships.map(s => `<div class="ship-row"><div class="row-main"><div class="row-title">${Format.escapeHtml(s.name)}</div></div><div class="row-sub">${s.quantity} Stk.</div></div>`).join('')
+            ? base.ships.map(s => `
+                <div class="ship-row">
+                    ${shipIconHtml(s.name)}
+                    <div class="row-main row-title">${Format.escapeHtml(s.name)}</div>
+                    <span class="lvl-pill">${s.quantity} Stk.</span>
+                </div>`).join('')
             : '<p class="row-sub">Hangar ist leer.</p>';
 
         renderDispatchForm();
@@ -401,6 +442,7 @@ const App = (() => {
                 const remaining = f.arrivesAtEpoch - Api.serverNowEpoch();
                 return `
                 <div class="queue-row">
+                    <div class="s-icon s-icon--mission">${MISSION_ICON[f.mission] || '●'}</div>
                     <div class="row-main">
                         <div class="row-title">${missionLabel(f.mission)} ${f.status === 'returning' ? '(Rückflug)' : ''}</div>
                         <div class="row-sub">Ziel-Sektor ${f.targetSector.x}:${f.targetSector.y} · Ankunft in ${Format.duration(remaining)}</div>
@@ -408,6 +450,16 @@ const App = (() => {
                 </div>`;
             }).join('')
             : '<p class="row-sub">Keine Flotten unterwegs.</p>';
+    }
+
+    function shipStatsHtml(s) {
+        const parts = [];
+        if (s.attack > 1) parts.push(`⚔️ ${Format.number(s.attack)}`);
+        if (s.shield > 0) parts.push(`🛡️ ${Format.number(s.shield)}`);
+        parts.push(`❤️ ${Format.number(s.hull)}`);
+        parts.push(`💨 ${Format.number(s.speed)}`);
+        if (s.cargoCapacity > 0) parts.push(`📦 ${Format.number(s.cargoCapacity)}`);
+        return parts.join('&nbsp;&nbsp;');
     }
 
     function missionLabel(m) {
@@ -450,23 +502,37 @@ const App = (() => {
         const presets = ['weapons', 'shields', 'speed'];
         const presetLabels = { weapons: 'Waffen', shields: 'Schilde', speed: 'Tempo' };
 
+        const selectedCount = Object.values(dispatchShipQty).reduce((sum, q) => sum + (q || 0), 0);
+        let totalCargo = 0;
+        let slowestSpeed = null;
+        base.ships.forEach(s => {
+            const qty = dispatchShipQty[s.id] || 0;
+            if (qty <= 0) return;
+            const type = state.catalog.shipTypes.find(t => t.id === s.id);
+            if (!type) return;
+            totalCargo += type.cargoCapacity * qty;
+            if (slowestSpeed === null || type.speed < slowestSpeed) slowestSpeed = type.speed;
+        });
+
         el.innerHTML = `
             <div class="row-sub" style="margin-bottom:6px;">
                 Ziel: ${dispatchTarget ? `Sektor ${dispatchTarget.x}:${dispatchTarget.y}, Slot ${dispatchTarget.position}` : 'Auf der Weltkarte antippen'}
             </div>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
-                ${missions.map(m => `<button class="btn ${dispatchMission === m ? 'primary' : ''}" data-mission="${m}">${missionLabel(m)}</button>`).join('')}
+                ${missions.map(m => `<button class="btn ${dispatchMission === m ? 'primary' : ''}" data-mission="${m}">${MISSION_ICON[m] || ''} ${missionLabel(m)}</button>`).join('')}
             </div>
             <div style="display:flex; gap:6px; margin-bottom:8px;">
-                ${presets.map(p => `<button class="btn ${dispatchPreset === p ? 'primary' : ''}" data-preset="${p}">${presetLabels[p]}</button>`).join('')}
+                ${presets.map(p => `<button class="btn ${dispatchPreset === p ? 'primary' : ''}" data-preset="${p}">${PRESET_ICON[p] || ''} ${presetLabels[p]}</button>`).join('')}
             </div>
             <div id="dispatch-ships">
                 ${base.ships.map(s => `
                     <div class="ship-row">
+                        ${shipIconHtml(s.name)}
                         <div class="row-main row-title">${Format.escapeHtml(s.name)} (${s.quantity} verfügbar)</div>
                         <input type="number" min="0" max="${s.quantity}" value="${dispatchShipQty[s.id] || 0}" data-ship-qty="${s.id}" style="width:64px; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px;">
                     </div>`).join('')}
             </div>
+            <div class="row-sub" id="dispatch-summary" style="margin-top:6px;">${dispatchSummaryText(selectedCount, totalCargo, slowestSpeed)}</div>
             <button class="btn primary" id="dispatch-submit" style="width:100%; margin-top:8px;">Flotte losschicken</button>
         `;
 
@@ -479,9 +545,31 @@ const App = (() => {
         document.querySelectorAll('[data-ship-qty]').forEach(input => {
             input.addEventListener('input', () => {
                 dispatchShipQty[input.dataset.shipQty] = parseInt(input.value, 10) || 0;
+                updateDispatchSummary(base);
             });
         });
         $('dispatch-submit').addEventListener('click', submitDispatch);
+    }
+
+    function dispatchSummaryText(selectedCount, totalCargo, slowestSpeed) {
+        return selectedCount > 0
+            ? `${selectedCount} Schiff(e) ausgewählt · 📦 ${Format.number(totalCargo)} Fracht · 💨 Tempo ${slowestSpeed}`
+            : 'Noch keine Schiffe ausgewählt.';
+    }
+
+    function updateDispatchSummary(base) {
+        const selectedCount = Object.values(dispatchShipQty).reduce((sum, q) => sum + (q || 0), 0);
+        let totalCargo = 0;
+        let slowestSpeed = null;
+        base.ships.forEach(s => {
+            const qty = dispatchShipQty[s.id] || 0;
+            if (qty <= 0) return;
+            const type = state.catalog.shipTypes.find(t => t.id === s.id);
+            if (!type) return;
+            totalCargo += type.cargoCapacity * qty;
+            if (slowestSpeed === null || type.speed < slowestSpeed) slowestSpeed = type.speed;
+        });
+        $('dispatch-summary').textContent = dispatchSummaryText(selectedCount, totalCargo, slowestSpeed);
     }
 
     async function submitDispatch() {
