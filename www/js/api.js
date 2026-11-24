@@ -165,6 +165,20 @@ const Api = (() => {
         clearActiveUniverse,
         hasTokenFor,
         listUniverses: () => call('GET', '/universes'),
+        // Prüft einen von Hand eingegebenen Token (Wiederherstellung über den Admin, siehe
+        // AdminEngine::reissueToken) GEGEN KEIN bestimmtes Universum - welches Universum der
+        // Token gehört, verrät erst die Antwort (state().player.universeId). Deshalb ein
+        // eigener Roh-Request statt call(), der nicht vom aktuell aktiven Universum abhängt.
+        async probeToken(token) {
+            const res = await fetch(BASE_URL + '/state', {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                throw new ApiError((data && data.error) || 'Zugangscode ungültig', res.status, data);
+            }
+            return data;
+        },
     };
 })();
 

@@ -14,6 +14,12 @@
     <div id="universe-select" class="hidden">
       <p>Wähle ein Universum:</p>
       <div id="universe-list"></div>
+      <button class="btn" id="show-recovery-btn" style="width:100%;max-width:280px;margin-top:12px;">Mit Zugangscode anmelden</button>
+      <div id="recovery-form" class="hidden" style="margin-top:8px;">
+        <p>Zugangscode vom Betreiber eingeben, um einen bestehenden Charakter in diesem Browser wiederherzustellen.</p>
+        <input id="recovery-token" type="text" placeholder="Zugangscode" autocomplete="off">
+        <button class="btn primary" id="recovery-submit" style="width:100%;max-width:280px;">Anmelden</button>
+      </div>
     </div>
     <div id="boot-retry" class="hidden">
       <p>Server nicht erreichbar. Dein Kommando existiert bereits - keine neue Basis gründen, einfach erneut versuchen.</p>

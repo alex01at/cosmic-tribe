@@ -284,7 +284,10 @@ const AdminApp = (() => {
                     <td>${p.totalTitan.toLocaleString('de-DE')}</td>
                     <td>${p.totalDeuterium.toLocaleString('de-DE')}</td>
                     <td>${p.totalCredits.toLocaleString('de-DE')}</td>
-                    <td><button class="btn danger delete-player">Löschen</button></td>
+                    <td>
+                        <button class="btn reissue-token">Zugangscode</button>
+                        <button class="btn danger delete-player">Löschen</button>
+                    </td>
                 </tr>
                 <tr class="player-bases-row hidden" data-bases-for="${p.id}"><td colspan="7"></td></tr>`).join('')
             : `<tr><td colspan="7">Keine Spieler.</td></tr>`;
@@ -299,6 +302,19 @@ const AdminApp = (() => {
 
         document.querySelectorAll('.toggle-player-bases').forEach(btn => {
             btn.addEventListener('click', () => togglePlayerBases(parseInt(btn.dataset.playerId, 10)));
+        });
+
+        document.querySelectorAll('.reissue-token').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const tr = btn.closest('tr');
+                const playerId = parseInt(tr.dataset.playerId, 10);
+                const username = tr.children[0].textContent;
+                if (!confirm(`Neuen Zugangscode für "${username}" ausstellen? Ein eventuell noch gültiger alter Token bleibt nebenbei weiter gültig (mehrere Geräte sind erlaubt).`)) return;
+                try {
+                    const res = await api('POST', '/admin/players/reissue-token', { playerId });
+                    prompt(`Zugangscode für "${username}" (zum Kopieren, einmalig anzeigen):`, res.token);
+                } catch (e) { showToast(e.message); }
+            });
         });
 
         document.querySelectorAll('.delete-player').forEach(btn => {

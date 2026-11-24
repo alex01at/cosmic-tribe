@@ -249,6 +249,25 @@ final class AdminEngine
         return $this->getPlayerBases((int) $playerId);
     }
 
+    // Spieler haben keinen Passwort-Login, nur device_id+Token im localStorage - geht der
+    // verloren (neues Gerät, gelöschte Browserdaten), kommt man ohne diesen Weg nicht mehr an
+    // seinen Charakter. Der Admin stellt einen neuen Token aus und gibt ihn dem Spieler (z.B. per
+    // Chat/E-Mail) - der trägt ihn im Login-Bildschirm unter "Mit Zugangscode anmelden" ein.
+    public function reissueToken(int $playerId): string
+    {
+        $checkStmt = $this->pdo->prepare('SELECT 1 FROM players WHERE id = ?');
+        $checkStmt->execute([$playerId]);
+        if ($checkStmt->fetch() === false) {
+            Response::error('Spieler nicht gefunden', 404);
+        }
+
+        $token = bin2hex(random_bytes(32));
+        $this->pdo->prepare('INSERT INTO user_tokens (player_id, token_hash, device_label) VALUES (?, ?, ?)')
+            ->execute([$playerId, hash('sha256', $token), 'admin-reissue']);
+
+        return $token;
+    }
+
     // Loescht einen Spieler samt allem, was an ihm/seinen Basen haengt - dieselbe
     // Aufraeum-Reihenfolge wie das Testdaten-Cleanup in tests.php (FK-sicher: Flotten vor
     // Spieler, Basis-Unterzeilen vor Basen).

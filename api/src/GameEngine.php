@@ -1241,7 +1241,7 @@ final class GameEngine
 
         return [
             'serverNow' => time(),
-            'player' => ['id' => (int) $player['id'], 'username' => $player['username']],
+            'player' => ['id' => (int) $player['id'], 'username' => $player['username'], 'universeId' => (int) $player['universe_id']],
             'bases' => $bases,
             'fleets' => $fleets,
             'incomingHostileFleets' => $incoming,

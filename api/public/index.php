@@ -198,6 +198,12 @@ $router->get('/api/admin/players', function () use ($pdo, $adminEngine) {
     Response::json(['players' => $adminEngine->listPlayers($universeId)]);
 });
 
+$router->post('/api/admin/players/reissue-token', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $playerId = (int) ($body['playerId'] ?? 0);
+    Response::json(['token' => $adminEngine->reissueToken($playerId)]);
+});
+
 $router->post('/api/admin/players/delete', function (array $body) use ($pdo, $adminEngine) {
     AdminAuth::requireAdmin($pdo);
     $playerId = (int) ($body['playerId'] ?? 0);

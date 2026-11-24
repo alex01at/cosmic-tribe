@@ -170,6 +170,24 @@ const App = (() => {
         }
     }
 
+    async function submitRecoveryToken() {
+        const token = $('recovery-token').value.trim();
+        $('login-error').textContent = '';
+        if (!token) {
+            return;
+        }
+        try {
+            const data = await Api.probeToken(token);
+            Api.setActiveUniverse(data.player.universeId);
+            Api.setToken(token);
+            await refreshState();
+            showGame();
+            startLoops();
+        } catch (e) {
+            $('login-error').textContent = humanizeError(e);
+        }
+    }
+
     function showGame() {
         $('login-screen').classList.add('hidden');
         $('game-screen').classList.remove('hidden');
@@ -188,6 +206,11 @@ const App = (() => {
             Api.clearActiveUniverse();
             boot();
         });
+        $('show-recovery-btn').addEventListener('click', () => {
+            $('recovery-form').classList.toggle('hidden');
+        });
+        $('recovery-submit').addEventListener('click', submitRecoveryToken);
+        $('recovery-token').addEventListener('keydown', e => { if (e.key === 'Enter') submitRecoveryToken(); });
     }
 
     async function submitLogin() {
