@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starforge Admin</title>
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body>
+<div id="login-screen">
+  <h1>Starforge Admin</h1>
+  <input id="login-email" type="email" placeholder="E-Mail" autocomplete="username">
+  <input id="login-password" type="password" placeholder="Passwort" autocomplete="current-password">
+  <button class="btn primary" id="login-submit">Anmelden</button>
+  <div id="login-error" class="error-text"></div>
+</div>
+
+<div id="dashboard" class="hidden">
+  <header id="top-bar">
+    <h1>Starforge Admin</h1>
+    <button class="btn" id="logout-btn">Abmelden</button>
+  </header>
+
+  <nav id="tab-nav">
+    <button class="tab-btn active" data-tab="settings">Einstellungen</button>
+    <button class="tab-btn" data-tab="catalog">Katalog</button>
+    <button class="tab-btn" data-tab="players">Spieler</button>
+  </nav>
+
+  <main id="tab-content">
+    <section id="tab-settings" class="tab-panel active">
+      <div class="panel">
+        <h2>Spielgeschwindigkeit</h2>
+        <p class="hint">Skaliert Bauzeiten/Produktions-Ticks/Flugzeiten. 1 = Echtzeit, höher = schneller. Wirkt sofort, ohne Neustart des Servers.</p>
+        <div class="field-row">
+          <label>game_speed</label>
+          <input id="setting-game-speed" type="number" min="0.1" step="0.1">
+          <button class="btn primary" id="save-settings-btn">Speichern</button>
+        </div>
+        <div id="settings-status" class="status-text"></div>
+      </div>
+    </section>
+
+    <section id="tab-catalog" class="tab-panel">
+      <div class="panel">
+        <h2>Gebäude-Ausbaustufen</h2>
+        <div id="building-levels-table"></div>
+      </div>
+      <div class="panel">
+        <h2>Schiffstypen</h2>
+        <div id="ship-types-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-players" class="tab-panel">
+      <div class="panel">
+        <h2>Spieler</h2>
+        <div id="players-table"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="../config.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>

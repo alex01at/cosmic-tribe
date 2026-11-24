@@ -19,12 +19,18 @@ require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/Response.php';
 require __DIR__ . '/../src/Router.php';
 require __DIR__ . '/../src/Auth.php';
+require __DIR__ . '/../src/AdminAuth.php';
+require __DIR__ . '/../src/AdminEngine.php';
 require __DIR__ . '/../src/CombatResolver.php';
 require __DIR__ . '/../src/GameEngine.php';
 
 $pdo = Database::connection();
 $config = require __DIR__ . '/../config/config.php';
-$gameSpeed = (float) $config['app']['game_speed'];
+
+$adminEngine = new AdminEngine($pdo, $config);
+// game_speed kommt, falls im Admin-Panel gesetzt, live aus der DB statt aus config.php - genau
+// dafuer gibt es game_settings: aendern ohne Redeploy.
+$gameSpeed = $adminEngine->getSettings()['gameSpeed'];
 
 $router = new Router();
 
@@ -130,6 +136,61 @@ $router->post('/api/alliance/kick', function (array $body) use ($pdo, $gameSpeed
     $targetPlayerId = (int) ($body['playerId'] ?? 0);
     $engine = new GameEngine($pdo, $gameSpeed);
     Response::json($engine->kickAllianceMember((int) $player['id'], $targetPlayerId));
+});
+
+// ============================================================
+// Admin (Betreiber-Panel) - komplett getrenntes Auth, siehe AdminAuth.php
+// ============================================================
+
+$router->post('/api/admin/login', function (array $body) use ($pdo) {
+    $email = (string) ($body['email'] ?? '');
+    $password = (string) ($body['password'] ?? '');
+    Response::json(AdminAuth::login($pdo, $email, $password));
+});
+
+$router->post('/api/admin/logout', function () use ($pdo) {
+    AdminAuth::logout($pdo);
+    Response::json(['ok' => true]);
+});
+
+$router->get('/api/admin/settings', function () use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    Response::json($adminEngine->getSettings());
+});
+
+$router->post('/api/admin/settings', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    Response::json($adminEngine->updateSettings($body));
+});
+
+$router->get('/api/admin/catalog', function () use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    Response::json($adminEngine->getCatalog());
+});
+
+$router->post('/api/admin/catalog/building-level', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $buildingTypeId = (int) ($body['buildingTypeId'] ?? 0);
+    $level = (int) ($body['level'] ?? 0);
+    Response::json($adminEngine->updateBuildingLevel($buildingTypeId, $level, $body));
+});
+
+$router->post('/api/admin/catalog/ship-type', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $shipTypeId = (int) ($body['id'] ?? 0);
+    Response::json($adminEngine->updateShipType($shipTypeId, $body));
+});
+
+$router->get('/api/admin/players', function () use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    Response::json(['players' => $adminEngine->listPlayers()]);
+});
+
+$router->post('/api/admin/players/delete', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    $playerId = (int) ($body['playerId'] ?? 0);
+    $adminEngine->deletePlayer($playerId);
+    Response::json(['ok' => true]);
 });
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
