@@ -112,6 +112,12 @@ $router->post('/api/fleet/dispatch', function (array $body) use ($pdo, $adminEng
     ));
 });
 
+$router->post('/api/fleet/recall', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
+    $fleetId = (int) ($body['fleetId'] ?? 0);
+    Response::json($engine->recallFleet((int) $player['id'], $fleetId));
+});
+
 $router->get('/api/alliances', function () use ($pdo, $adminEngine, $requirePlayerEngine) {
     [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     Response::json($engine->listAlliances((int) $player['universe_id']));
@@ -139,6 +145,16 @@ $router->post('/api/alliance/kick', function (array $body) use ($pdo, $adminEngi
     [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
     $targetPlayerId = (int) ($body['playerId'] ?? 0);
     Response::json($engine->kickAllianceMember((int) $player['id'], $targetPlayerId));
+});
+
+$router->get('/api/alliance/messages', function () use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
+    Response::json($engine->listAllianceMessages((int) $player['id']));
+});
+
+$router->post('/api/alliance/messages/send', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
+    [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
+    Response::json($engine->postAllianceMessage((int) $player['id'], (string) ($body['body'] ?? '')));
 });
 
 // ============================================================

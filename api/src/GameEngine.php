@@ -172,23 +172,39 @@ final class GameEngine
     private function resolveStationArrival(array $fleet, array $fleetShips): void
     {
         $baseStmt = $this->pdo->prepare(
-            'SELECT id FROM bases WHERE sector_id = ? AND position = ? AND player_id = ? FOR UPDATE'
+            'SELECT id, player_id FROM bases WHERE sector_id = ? AND position = ? FOR UPDATE'
         );
-        $baseStmt->execute([$fleet['target_sector_id'], $fleet['target_position'], $fleet['player_id']]);
-        $baseId = $baseStmt->fetchColumn();
+        $baseStmt->execute([$fleet['target_sector_id'], $fleet['target_position']]);
+        $base = $baseStmt->fetch();
 
-        if ($baseId !== false) {
+        if ($base !== false && (int) $base['player_id'] === (int) $fleet['player_id']) {
+            // Eigene Basis: Schiffe werden sofort Teil des Hangars, wie bisher.
             foreach ($fleetShips as $s) {
                 $this->pdo->prepare(
                     'INSERT INTO base_ships (base_id, ship_type_id, quantity) VALUES (?, ?, ?)
                      ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)'
-                )->execute([$baseId, $s['type']['id'], $s['quantity']]);
+                )->execute([$base['id'], $s['type']['id'], $s['quantity']]);
             }
-        }
-        // Zielbasis existiert nicht mehr / gehört nicht mehr dem Spieler: Schiffe gehen verloren
-        // statt die Auflösung abzubrechen (Basen werden in Phase 2 nie gelöscht, praktisch nie
-        // der Fall) - keine Rückreise bei 'station', laut Missionstabelle im Advisor-Review.
+            $this->pdo->prepare('DELETE FROM fleet_ships WHERE fleet_id = ?')->execute([$fleet['id']]);
+            $this->pdo->prepare('DELETE FROM fleets WHERE id = ?')->execute([$fleet['id']]);
 
+            return;
+        }
+
+        $allianceId = $this->allianceIdOf((int) $fleet['player_id']);
+        if ($base !== false && $allianceId !== null && $allianceId === $this->allianceIdOf((int) $base['player_id'])) {
+            // Verbündete Basis: die Flotte bleibt EIGENSTAENDIG bestehen (gehoert weiterhin dem
+            // Absender, wird NICHT in base_ships des Verbuendeten gemergt) und verteidigt ab
+            // sofort mit (siehe resolveCombatArrival()). Der Besitzer kann sie jederzeit per
+            // recallFleet() zurueckholen.
+            $this->pdo->prepare("UPDATE fleets SET status = 'arrived' WHERE id = ?")->execute([$fleet['id']]);
+
+            return;
+        }
+
+        // Ziel ist weder eigene noch (mehr) verbündete Basis (z.B. Basis weg oder Allianz
+        // zwischenzeitlich verlassen) - Schiffe gehen verloren statt die Auflösung abzubrechen,
+        // genau wie beim bisherigen "Basis existiert nicht mehr"-Fall.
         $this->pdo->prepare('DELETE FROM fleet_ships WHERE fleet_id = ?')->execute([$fleet['id']]);
         $this->pdo->prepare('DELETE FROM fleets WHERE id = ?')->execute([$fleet['id']]);
     }
@@ -349,6 +365,25 @@ final class GameEngine
             );
             $defShipsStmt->execute([$targetBase['id']]);
             $defenderShips = array_map(fn ($r) => ['type' => $r, 'quantity' => (int) $r['quantity']], $defShipsStmt->fetchAll());
+
+            // Verbündete Flotten, die hier stationiert sind (gegenseitige Verteidigung -
+            // siehe resolveStationArrival()), verteidigen mit. Join ueber zwei alliance_members-
+            // Zeilen mit derselben alliance_id statt eines direkten Allianz-Vergleichs, damit
+            // ein Verteidiger ohne Allianz einfach keine Treffer liefert (kein NULL-Sonderfall
+            // noetig).
+            $stationedStmt = $this->pdo->prepare(
+                "SELECT fs.ship_type_id, fs.quantity, st.* FROM fleets f
+                 JOIN fleet_ships fs ON fs.fleet_id = f.id
+                 JOIN ship_types st ON st.id = fs.ship_type_id
+                 JOIN alliance_members am_owner ON am_owner.player_id = f.player_id
+                 JOIN alliance_members am_base ON am_base.alliance_id = am_owner.alliance_id AND am_base.player_id = ?
+                 WHERE f.status = 'arrived' AND f.mission = 'station'
+                   AND f.target_sector_id = ? AND f.target_position = ? AND fs.quantity > 0"
+            );
+            $stationedStmt->execute([$defenderPlayerId, $fleet['target_sector_id'], $fleet['target_position']]);
+            foreach ($stationedStmt->fetchAll() as $r) {
+                $defenderShips[] = ['type' => $r, 'quantity' => (int) $r['quantity']];
+            }
         } else {
             $npcStmt = $this->pdo->prepare('SELECT * FROM npc_outposts WHERE sector_id = ? AND position = ? FOR UPDATE');
             $npcStmt->execute([$fleet['target_sector_id'], $fleet['target_position']]);
@@ -367,6 +402,7 @@ final class GameEngine
         // gehabt, obwohl CombatResolver eine echte defenderLossRatio > 0 ausweisen kann.
         if ($targetBase !== false) {
             $this->applyLossRatio((int) $targetBase['id'], null, $combat['defenderLossRatio']);
+            $this->applyLossRatioToStationedFleets($fleet['target_sector_id'], $fleet['target_position'], $combat['defenderLossRatio']);
         }
 
         if ($combat['outcome'] === 'attacker_win') {
@@ -500,6 +536,40 @@ final class GameEngine
             $newQty = (int) floor((int) $row['quantity'] * (1 - $lossRatio));
             $this->pdo->prepare('UPDATE base_ships SET quantity = ? WHERE base_id = ? AND ship_type_id = ?')
                 ->execute([$newQty, $baseId, $row['ship_type_id']]);
+        }
+    }
+
+    /**
+     * Verluste auch auf verbündete Garnisonsflotten anwenden (siehe resolveCombatArrival()),
+     * NICHT nur auf die eigenen base_ships der angegriffenen Basis. Eine Garnison, die dabei auf
+     * 0 Schiffe faellt, wird aufgeraeumt statt als leere Huelle stehen zu bleiben.
+     */
+    private function applyLossRatioToStationedFleets(int $sectorId, int $position, float $lossRatio): void
+    {
+        if ($lossRatio <= 0.0) {
+            return;
+        }
+        $fleetStmt = $this->pdo->prepare(
+            "SELECT id FROM fleets WHERE status = 'arrived' AND mission = 'station'
+             AND target_sector_id = ? AND target_position = ? FOR UPDATE"
+        );
+        $fleetStmt->execute([$sectorId, $position]);
+
+        foreach ($fleetStmt->fetchAll() as $fleetRow) {
+            $fleetId = (int) $fleetRow['id'];
+            $shipsStmt = $this->pdo->prepare('SELECT ship_type_id, quantity FROM fleet_ships WHERE fleet_id = ? FOR UPDATE');
+            $shipsStmt->execute([$fleetId]);
+            $remainingTotal = 0;
+            foreach ($shipsStmt->fetchAll() as $row) {
+                $newQty = (int) floor((int) $row['quantity'] * (1 - $lossRatio));
+                $remainingTotal += $newQty;
+                $this->pdo->prepare('UPDATE fleet_ships SET quantity = ? WHERE fleet_id = ? AND ship_type_id = ?')
+                    ->execute([$newQty, $fleetId, $row['ship_type_id']]);
+            }
+            if ($remainingTotal <= 0) {
+                $this->pdo->prepare('DELETE FROM fleet_ships WHERE fleet_id = ?')->execute([$fleetId]);
+                $this->pdo->prepare('DELETE FROM fleets WHERE id = ?')->execute([$fleetId]);
+            }
         }
     }
 
@@ -1240,6 +1310,37 @@ final class GameEngine
         return ['fleetId' => $fleetId, 'arrivesInSeconds' => $travelSeconds];
     }
 
+    /**
+     * Holt eine bei einem Verbündeten stationierte Garnison zurück (siehe resolveStationArrival())
+     * - schickt sie denselben Weg zurück zur Herkunftsbasis, den sie gekommen ist. Nur der
+     * Besitzer selbst kann das, unabhängig davon, ob er noch in derselben Allianz ist.
+     */
+    public function recallFleet(int $playerId, int $fleetId): array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare('SELECT * FROM fleets WHERE id = ? AND player_id = ? FOR UPDATE');
+            $stmt->execute([$fleetId, $playerId]);
+            $fleet = $stmt->fetch();
+            if ($fleet === false || $fleet['status'] !== 'arrived' || $fleet['mission'] !== 'station') {
+                $this->rollbackIfOpen();
+                Response::error('Diese Flotte kann nicht zurückgerufen werden', 422);
+            }
+
+            $travelSeconds = $this->travelSeconds($fleet);
+            $now = new DateTimeImmutable();
+            $this->pdo->prepare("UPDATE fleets SET status = 'returning', arrives_at = ? WHERE id = ?")
+                ->execute([$now->modify("+{$travelSeconds} seconds")->format('Y-m-d H:i:s'), $fleetId]);
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->rollbackIfOpen();
+            throw $e;
+        }
+
+        return ['recalled' => true];
+    }
+
     /** @param array<int, int> $shipComposition */
     private function assertValidMissionTarget(
         int $playerId,
@@ -1288,6 +1389,18 @@ final class GameEngine
                 }
                 break;
             case 'station':
+                if ($targetBase === false) {
+                    $this->rollbackIfOpen();
+                    Response::error('Ziel muss eine eigene oder verbündete Basis sein', 422);
+                }
+                if ((int) $targetBase['player_id'] !== $playerId) {
+                    $allianceId = $this->allianceIdOf($playerId);
+                    if ($allianceId === null || $allianceId !== $this->allianceIdOf((int) $targetBase['player_id'])) {
+                        $this->rollbackIfOpen();
+                        Response::error('Ziel muss eine eigene oder verbündete Basis sein', 422);
+                    }
+                }
+                break;
             case 'transport':
                 if ($targetBase === false || (int) $targetBase['player_id'] !== $playerId) {
                     $this->rollbackIfOpen();
@@ -1834,6 +1947,9 @@ final class GameEngine
                     $this->pdo->prepare('UPDATE alliances SET leader_player_id = ? WHERE id = ?')
                         ->execute([(int) $nextLeader, $allianceId]);
                 } else {
+                    // Erst die Chat-Historie loeschen, sonst blockt die Fremdschluessel-
+                    // Constraint das Loeschen der Allianz selbst.
+                    $this->pdo->prepare('DELETE FROM alliance_messages WHERE alliance_id = ?')->execute([$allianceId]);
                     $this->pdo->prepare('DELETE FROM alliances WHERE id = ?')->execute([$allianceId]);
                 }
             }
@@ -1891,6 +2007,50 @@ final class GameEngine
         }
 
         return $this->allianceInfo($playerId);
+    }
+
+    private const MAX_ALLIANCE_MESSAGE_LENGTH = 500;
+
+    public function postAllianceMessage(int $playerId, string $body): array
+    {
+        $body = trim($body);
+        if ($body === '' || mb_strlen($body) > self::MAX_ALLIANCE_MESSAGE_LENGTH) {
+            Response::error('Nachricht muss 1-' . self::MAX_ALLIANCE_MESSAGE_LENGTH . ' Zeichen haben', 422);
+        }
+
+        $allianceId = $this->allianceIdOf($playerId);
+        if ($allianceId === null) {
+            Response::error('Du bist in keiner Allianz', 422);
+        }
+
+        $this->pdo->prepare('INSERT INTO alliance_messages (alliance_id, player_id, body) VALUES (?, ?, ?)')
+            ->execute([$allianceId, $playerId, $body]);
+
+        return $this->listAllianceMessages($playerId);
+    }
+
+    /** Neueste zuerst limitiert auf 100 - fürs Nachladen älterer Nachrichten reicht das für Phase 4 noch nicht, aber ein Chat-Verlauf ist kein Spielzustand, den man stundenlang zurückscrollen muss. */
+    public function listAllianceMessages(int $playerId): array
+    {
+        $allianceId = $this->allianceIdOf($playerId);
+        if ($allianceId === null) {
+            return ['messages' => []];
+        }
+
+        $stmt = $this->pdo->prepare(
+            'SELECT am.id, am.body, am.created_at, p.username FROM alliance_messages am
+             JOIN players p ON p.id = am.player_id
+             WHERE am.alliance_id = ? ORDER BY am.id DESC LIMIT 100'
+        );
+        $stmt->execute([$allianceId]);
+        $rows = array_reverse($stmt->fetchAll());
+
+        return ['messages' => array_map(fn ($m) => [
+            'id' => (int) $m['id'],
+            'username' => $m['username'],
+            'body' => $m['body'],
+            'createdAtEpoch' => $this->toEpoch($m['created_at']),
+        ], $rows)];
     }
 
     public function listAlliances(int $universeId): array

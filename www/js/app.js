@@ -8,6 +8,7 @@ const App = (() => {
     let dispatchShipQty = {}; // shipTypeId -> eingetragene Menge, übersteht renderDispatchForm()
     let pollTimer = null;
     let tickTimer = null;
+    let allianceChatTimer = null;
     let mapInitialized = false;
     let baseViewMode = (() => {
         try { return localStorage.getItem('sf_base_view_mode') || 'scene'; } catch (e) { return 'scene'; }
@@ -596,6 +597,17 @@ const App = (() => {
 
         $('fleets-active').innerHTML = state.fleets.length
             ? state.fleets.map(f => {
+                if (f.status === 'arrived' && f.mission === 'station') {
+                    return `
+                    <div class="queue-row">
+                        <div class="s-icon s-icon--mission">${MISSION_ICON[f.mission] || '●'}</div>
+                        <div class="row-main">
+                            <div class="row-title">Garnison bei Verbündetem</div>
+                            <div class="row-sub">Sektor ${f.targetSector.x}:${f.targetSector.y} - verteidigt dort mit</div>
+                        </div>
+                        <button class="btn" data-recall-fleet="${f.id}">Zurückrufen</button>
+                    </div>`;
+                }
                 const remaining = f.arrivesAtEpoch - Api.serverNowEpoch();
                 return `
                 <div class="queue-row">
@@ -607,6 +619,19 @@ const App = (() => {
                 </div>`;
             }).join('')
             : '<p class="row-sub">Keine Flotten unterwegs.</p>';
+
+        document.querySelectorAll('[data-recall-fleet]').forEach(btn => {
+            btn.addEventListener('click', () => recallFleet(parseInt(btn.dataset.recallFleet, 10)));
+        });
+    }
+
+    async function recallFleet(fleetId) {
+        try {
+            await Api.post('/fleet/recall', { fleetId });
+            await refreshState();
+        } catch (e) {
+            errorToast(e, 'Fehler beim Zurückrufen');
+        }
     }
 
     function shipStatsHtml(s) {
@@ -869,11 +894,20 @@ const App = (() => {
                         </div>`).join('')}
                 </div>
                 <button class="btn danger" id="alliance-leave-btn" style="width:100%; margin-top:10px;">Allianz verlassen</button>
+                <div class="row-title" style="margin:14px 0 6px;">Allianz-Chat</div>
+                <div id="alliance-chat-messages" style="max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:8px; margin-bottom:8px;"></div>
+                <div style="display:flex; gap:6px;">
+                    <input type="text" id="alliance-chat-input" placeholder="Nachricht..." maxlength="500" style="flex:1; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;">
+                    <button class="btn primary" id="alliance-chat-send-btn">Senden</button>
+                </div>
             `;
             document.querySelectorAll('[data-kick]').forEach(btn => {
                 btn.addEventListener('click', () => kickAllianceMember(parseInt(btn.dataset.kick, 10)));
             });
             $('alliance-leave-btn').addEventListener('click', leaveAlliance);
+            $('alliance-chat-send-btn').addEventListener('click', sendAllianceMessage);
+            $('alliance-chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendAllianceMessage(); });
+            loadAllianceMessages();
             return;
         }
 
@@ -902,6 +936,49 @@ const App = (() => {
             });
         } catch (e) {
             el.innerHTML = '<p class="row-sub">Allianzliste konnte nicht geladen werden.</p>';
+        }
+    }
+
+    function startAllianceChatPoll() {
+        stopAllianceChatPoll();
+        allianceChatTimer = setInterval(() => {
+            if (state && state.alliance) loadAllianceMessages();
+        }, 8000);
+    }
+
+    function stopAllianceChatPoll() {
+        if (allianceChatTimer) {
+            clearInterval(allianceChatTimer);
+            allianceChatTimer = null;
+        }
+    }
+
+    async function loadAllianceMessages() {
+        const box = $('alliance-chat-messages');
+        if (!box) return;
+        try {
+            const res = await Api.get('/alliance/messages');
+            const wasAtBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+            box.innerHTML = res.messages.length
+                ? res.messages.map(m => `
+                    <div class="row-sub" style="margin-bottom:4px;">
+                        <strong>${Format.escapeHtml(m.username)}:</strong> ${Format.escapeHtml(m.body)}
+                    </div>`).join('')
+                : '<p class="row-sub">Noch keine Nachrichten.</p>';
+            if (wasAtBottom) box.scrollTop = box.scrollHeight;
+        } catch (e) { /* stilles Scheitern - Chat ist nicht spielentscheidend */ }
+    }
+
+    async function sendAllianceMessage() {
+        const input = $('alliance-chat-input');
+        const body = input.value.trim();
+        if (!body) return;
+        try {
+            input.value = '';
+            await Api.post('/alliance/messages/send', { body });
+            await loadAllianceMessages();
+        } catch (e) {
+            errorToast(e, 'Nachricht konnte nicht gesendet werden');
         }
     }
 
@@ -971,6 +1048,9 @@ const App = (() => {
         }
         if (view === 'alliance') {
             renderAlliance();
+            startAllianceChatPoll();
+        } else {
+            stopAllianceChatPoll();
         }
     }
 

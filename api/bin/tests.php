@@ -685,6 +685,122 @@ $finalMemberCountStmt->execute([$allianceId]);
 check((int) $finalMemberCountStmt->fetchColumn() === 2, 'Allianz hat trotz 6 paralleler Beitritte genau member_cap=2 Mitglieder (1 Anführer + 1 neues)');
 check($capSuccesses === 1, 'Von 6 parallelen Beitritten gelingt genau 1 (die Kapazität lässt noch 1 Platz zu), sind ' . $capSuccesses);
 
+// --- Test: Allianz-Chat ist nur fuer Mitglieder sichtbar/nutzbar ---
+echo "Test: Allianz-Chat - Mitglieder sehen Nachrichten, Nicht-Mitglieder können nicht posten\n";
+$c1 = registerPlayer($pdo, $createdDeviceIds, 'test-chat-1');
+$chatAllianceTag = 'C' . random_int(1000, 9999);
+$chatAlliance = apiCall('POST', '/api/alliance/create', ['name' => 'Chatallianz ' . $chatAllianceTag, 'tag' => $chatAllianceTag], $c1['token']);
+$chatAllianceId = $chatAlliance['body']['id'];
+$c2 = registerPlayer($pdo, $createdDeviceIds, 'test-chat-2');
+apiCall('POST', '/api/alliance/join', ['allianceId' => $chatAllianceId], $c2['token']);
+$c3 = registerPlayer($pdo, $createdDeviceIds, 'test-chat-outsider');
+
+$sendResult = apiCall('POST', '/api/alliance/messages/send', ['body' => 'Hallo Allianz!'], $c1['token']);
+check($sendResult['status'] === 200, 'Allianz-Mitglied kann eine Chat-Nachricht senden, Status: ' . $sendResult['status']);
+
+$c2Messages = apiCall('GET', '/api/alliance/messages', null, $c2['token']);
+check(
+    count($c2Messages['body']['messages']) === 1 && $c2Messages['body']['messages'][0]['body'] === 'Hallo Allianz!',
+    'Anderes Allianzmitglied sieht dieselbe Nachricht'
+);
+
+$outsiderSend = apiCall('POST', '/api/alliance/messages/send', ['body' => 'Darf ich mitreden?'], $c3['token']);
+check($outsiderSend['status'] === 422, 'Nicht-Allianzmitglied kann keine Chat-Nachricht senden (422), Status: ' . $outsiderSend['status']);
+$outsiderRead = apiCall('GET', '/api/alliance/messages', null, $c3['token']);
+check($outsiderRead['body']['messages'] === [], 'Nicht-Allianzmitglied sieht keine fremden Chat-Nachrichten');
+
+// --- Test: gegenseitige Verteidigung - stationierte Flotte bei einem Verbündeten verteidigt mit ---
+echo "Test: Stationierung bei eigener Basis bleibt unverändert, bei Verbündeten verteidigt die Flotte mit\n";
+$d1 = registerPlayer($pdo, $createdDeviceIds, 'test-station-own'); // stationiert bei sich selbst
+giveShips($pdo, $d1['baseId'], 1, 3); // 3 Scouts
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$d1['baseId']]);
+$ownStation = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $d1['baseId'], 'ships' => [1 => 3],
+    'targetSectorId' => $d1['sectorId'], 'targetPosition' => $d1['position'],
+    'mission' => 'station', 'energyPreset' => 'weapons',
+], $d1['token']);
+check($ownStation['status'] === 200, 'Stationierung bei eigener Basis wird angenommen');
+$pdo->prepare('UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?')->execute([$ownStation['body']['fleetId']]);
+apiCall('GET', '/api/state', null, $d1['token']);
+$ownScoutQty = (int) $pdo->query("SELECT quantity FROM base_ships WHERE base_id = {$d1['baseId']} AND ship_type_id = 1")->fetchColumn();
+check($ownScoutQty === 3, "Scouts landen wie bisher direkt im eigenen Hangar (Bestand: {$ownScoutQty})");
+$ownFleetGone = (int) $pdo->query("SELECT COUNT(*) FROM fleets WHERE id = {$ownStation['body']['fleetId']}")->fetchColumn();
+check($ownFleetGone === 0, 'Die Flotten-Zeile wird beim eigenen Stationieren wie bisher gelöscht');
+
+$defender = registerPlayer($pdo, $createdDeviceIds, 'test-mutual-defender');
+$garrison = registerPlayer($pdo, $createdDeviceIds, 'test-mutual-garrison');
+$mutualAllianceTag = 'M' . random_int(1000, 9999);
+$mutualAlliance = apiCall('POST', '/api/alliance/create', ['name' => 'Verteidigungspakt ' . $mutualAllianceTag, 'tag' => $mutualAllianceTag], $defender['token']);
+$mutualAllianceId = $mutualAlliance['body']['id'];
+apiCall('POST', '/api/alliance/join', ['allianceId' => $mutualAllianceId], $garrison['token']);
+
+$pdo->prepare('UPDATE bases SET protected_until = NULL WHERE id = ?')->execute([$defender['baseId']]);
+giveShips($pdo, $garrison['baseId'], 3, 5); // 5 Kreuzer als Garnison
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$garrison['baseId']]);
+
+// c3 (aus dem Chat-Test, in keiner Allianz mit defender) versucht, bei defender zu stationieren -
+// von der EIGENEN Basis aus, das Ziel ist einfach keine eigene/verbündete Basis.
+giveShips($pdo, $c3['baseId'], 1, 1);
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$c3['baseId']]);
+$outsiderStationAttempt = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $c3['baseId'], 'ships' => [1 => 1],
+    'targetSectorId' => $defender['sectorId'], 'targetPosition' => $defender['position'],
+    'mission' => 'station', 'energyPreset' => 'weapons',
+], $c3['token']);
+check($outsiderStationAttempt['status'] === 422, 'Nicht verbündeter Spieler kann nicht bei einer fremden Basis stationieren (422), Status: ' . $outsiderStationAttempt['status']);
+
+$garrisonDispatch = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $garrison['baseId'], 'ships' => [3 => 5],
+    'targetSectorId' => $defender['sectorId'], 'targetPosition' => $defender['position'],
+    'mission' => 'station', 'energyPreset' => 'weapons',
+], $garrison['token']);
+check($garrisonDispatch['status'] === 200, 'Stationierung bei einer verbündeten Basis wird angenommen');
+$garrisonFleetId = $garrisonDispatch['body']['fleetId'];
+$pdo->prepare('UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?')->execute([$garrisonFleetId]);
+apiCall('GET', '/api/state', null, $garrison['token']);
+
+$garrisonFleetRow = $pdo->query("SELECT status, mission FROM fleets WHERE id = $garrisonFleetId")->fetch();
+check(
+    $garrisonFleetRow !== false && $garrisonFleetRow['status'] === 'arrived' && $garrisonFleetRow['mission'] === 'station',
+    'Die Garnisonsflotte bleibt als eigenständige Zeile bestehen (status=arrived), statt in base_ships des Verbündeten aufzugehen'
+);
+$garrisonInDefenderBaseShips = (int) $pdo->query("SELECT COUNT(*) FROM base_ships WHERE base_id = {$defender['baseId']} AND ship_type_id = 3")->fetchColumn();
+check($garrisonInDefenderBaseShips === 0, 'Die Garnisonsschiffe werden NICHT in den Hangar des Verbündeten gemergt');
+
+// Verteidiger hat selbst KEINE eigenen Schiffe - ohne die Garnison müsste ein Angriff gelingen.
+$attacker = registerPlayer($pdo, $createdDeviceIds, 'test-mutual-attacker');
+giveShips($pdo, $attacker['baseId'], 2, 10); // 10 Abfangjäger - setzt der 5-Kreuzer-Garnison zu, gewinnt aber nicht
+$pdo->prepare('UPDATE bases SET deuterium = 100000 WHERE id = ?')->execute([$attacker['baseId']]);
+$mutualAttack = apiCall('POST', '/api/fleet/dispatch', [
+    'baseId' => $attacker['baseId'], 'ships' => [2 => 10],
+    'targetSectorId' => $defender['sectorId'], 'targetPosition' => $defender['position'],
+    'mission' => 'attack', 'energyPreset' => 'weapons',
+], $attacker['token']);
+check($mutualAttack['status'] === 200, 'Angriff auf die (eigentlich wehrlose) verbündete Basis wird angenommen');
+$pdo->prepare('UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?')->execute([$mutualAttack['body']['fleetId']]);
+apiCall('GET', '/api/state', null, $attacker['token']);
+$mutualReport = $pdo->query(
+    "SELECT * FROM combat_reports WHERE attacker_player_id = {$attacker['playerId']} ORDER BY id DESC LIMIT 1"
+)->fetch();
+check(
+    $mutualReport['outcome'] === 'defender_win',
+    'Dank der verbündeten Garnison gewinnt die eigentlich wehrlose Basis den Kampf, Ergebnis: ' . ($mutualReport['outcome'] ?? 'n/a')
+);
+$garrisonQtyAfterBattle = (int) $pdo->query("SELECT quantity FROM fleet_ships WHERE fleet_id = $garrisonFleetId AND ship_type_id = 3")->fetchColumn();
+check($garrisonQtyAfterBattle < 5, "Die Garnison nimmt im Kampf Verluste (Bestand jetzt: {$garrisonQtyAfterBattle} von 5)");
+
+// Zurückrufen: Besitzer bekommt seine Garnison wieder zurück.
+$recallResult = apiCall('POST', '/api/fleet/recall', ['fleetId' => $garrisonFleetId], $garrison['token']);
+check($recallResult['status'] === 200, 'Besitzer kann seine stationierte Garnison zurückrufen, Status: ' . $recallResult['status']);
+$recallByOtherResult = apiCall('POST', '/api/fleet/recall', ['fleetId' => $garrisonFleetId], $defender['token']);
+check($recallByOtherResult['status'] === 422, 'Der Verbündete selbst kann die fremde Garnison NICHT zurückrufen (422)');
+$pdo->prepare("UPDATE fleets SET arrives_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?")->execute([$garrisonFleetId]);
+apiCall('GET', '/api/state', null, $garrison['token']);
+$garrisonHomeQty = (int) $pdo->query("SELECT quantity FROM base_ships WHERE base_id = {$garrison['baseId']} AND ship_type_id = 3")->fetchColumn();
+check($garrisonHomeQty === $garrisonQtyAfterBattle, "Zurückgerufene Garnison landet wieder im Heimat-Hangar (Bestand: {$garrisonHomeQty})");
+$garrisonFleetGone = (int) $pdo->query("SELECT COUNT(*) FROM fleets WHERE id = $garrisonFleetId")->fetchColumn();
+check($garrisonFleetGone === 0, 'Die Flotten-Zeile ist nach der Rückkehr aufgeräumt');
+
 // --- Test 17: Allianz-Name/-Tag mit HTML/JS wird abgelehnt (XSS-Fund, Advisor-Review) ---
 echo "Test: Allianz-Name/-Tag mit ungültigen Zeichen (HTML/JS) wird abgelehnt\n";
 $xssAttempt = apiCall('POST', '/api/alliance/create', [
@@ -738,6 +854,10 @@ if ($playerIds !== []) {
     $pdo->prepare("DELETE FROM combat_reports WHERE attacker_player_id IN ($idPh) OR defender_player_id IN ($idPh)")
         ->execute(array_merge($playerIds, $playerIds));
 
+    $pdo->prepare("DELETE FROM alliance_messages WHERE player_id IN ($idPh)")->execute($playerIds);
+    $pdo->prepare(
+        "DELETE FROM alliance_messages WHERE alliance_id IN (SELECT id FROM alliances WHERE leader_player_id IN ($idPh))"
+    )->execute($playerIds);
     $pdo->prepare("DELETE FROM alliance_members WHERE player_id IN ($idPh)")->execute($playerIds);
     $pdo->prepare("DELETE FROM alliances WHERE leader_player_id IN ($idPh)")->execute($playerIds);
 
