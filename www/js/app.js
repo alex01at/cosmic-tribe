@@ -118,6 +118,7 @@ const App = (() => {
         try {
             state = await Api.get('/state');
             setOffline(false);
+            MapView.setOwnUsername(state.player.username);
             renderAll();
         } catch (e) {
             if (e instanceof ApiError && e.isNetworkError) {
