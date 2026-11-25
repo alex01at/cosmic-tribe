@@ -169,3 +169,6 @@ table.admin-table--nested input[type="number"] {
 #log-search { flex: 1; min-width: 160px; }
 tr.log-row--error td:nth-child(2) { color: var(--danger); font-weight: 600; }
 tr.log-row--error { background: rgba(239, 83, 80, 0.08); }
+tr.log-row--moderation td:nth-child(2) { color: #e8a33d; font-weight: 600; }
+tr.log-row--moderation { background: rgba(232, 163, 61, 0.08); }
+#banned-words-textarea { resize: vertical; }

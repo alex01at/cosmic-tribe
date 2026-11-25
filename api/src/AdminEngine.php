@@ -368,4 +368,44 @@ final class AdminEngine
             'total' => $total,
         ];
     }
+
+    // --- Wortfilter ---------------------------------------------------------
+
+    public function listBannedWords(): array
+    {
+        $rows = $this->pdo->query('SELECT word FROM banned_words ORDER BY word ASC')->fetchAll(PDO::FETCH_COLUMN);
+
+        return ['words' => $rows];
+    }
+
+    /** Ersetzt die komplette Liste - einfacher zu bedienen (ein Textfeld) als einzelne CRUD-Zeilen für eine reine Pflegeliste. */
+    public function setBannedWords(array $words): array
+    {
+        $cleaned = [];
+        foreach ($words as $w) {
+            $w = trim(mb_strtolower((string) $w));
+            if ($w !== '' && mb_strlen($w) <= 100) {
+                $cleaned[$w] = true; // dedupliziert nebenbei
+            }
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $this->pdo->exec('DELETE FROM banned_words');
+            if ($cleaned !== []) {
+                $stmt = $this->pdo->prepare('INSERT INTO banned_words (word) VALUES (?)');
+                foreach (array_keys($cleaned) as $w) {
+                    $stmt->execute([$w]);
+                }
+            }
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        return $this->listBannedWords();
+    }
 }

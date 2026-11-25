@@ -26,6 +26,7 @@
     <button class="tab-btn" data-tab="catalog">Katalog</button>
     <button class="tab-btn" data-tab="players">Spieler</button>
     <button class="tab-btn" data-tab="log">Log</button>
+    <button class="tab-btn" data-tab="wordfilter">Wortfilter</button>
   </nav>
 
   <main id="tab-content">
@@ -97,12 +98,24 @@
             <option value="alliance">Allianz</option>
             <option value="combat">Angriff/Plünderung</option>
             <option value="colonize">Kolonisierung</option>
+            <option value="chat">Allianz-Chat</option>
+            <option value="moderation">Wortfilter blockiert</option>
             <option value="error">Fehler</option>
           </select>
           <input id="log-search" type="text" placeholder="Suche in Nachricht...">
           <button class="btn primary" id="log-search-btn">Suchen</button>
         </div>
         <div id="log-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-wordfilter" class="tab-panel">
+      <div class="panel">
+        <h2>Wortfilter</h2>
+        <p class="hint">Ein Begriff pro Zeile. Groß-/Kleinschreibung spielt keine Rolle. Blockiert Spielernamen bei der Registrierung, Allianznamen/-Tags und Allianz-Chat-Nachrichten, die einen dieser Begriffe als Teilstring enthalten.</p>
+        <textarea id="banned-words-textarea" rows="12" style="width:100%; background:var(--bg-panel-raised); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px; font-family:inherit;"></textarea>
+        <button class="btn primary" id="banned-words-save-btn" style="margin-top:8px;">Speichern</button>
+        <span id="banned-words-status" class="status-text"></span>
       </div>
     </section>
   </main>

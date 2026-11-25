@@ -709,6 +709,35 @@ check($outsiderSend['status'] === 422, 'Nicht-Allianzmitglied kann keine Chat-Na
 $outsiderRead = apiCall('GET', '/api/alliance/messages', null, $c3['token']);
 check($outsiderRead['body']['messages'] === [], 'Nicht-Allianzmitglied sieht keine fremden Chat-Nachrichten');
 
+// Eine normale Chat-Nachricht muss im Ereignis-Log auftauchen (Nutzer-Rückmeldung: fehlte bisher).
+$chatLogRow = $pdo->query(
+    "SELECT * FROM event_log WHERE category = 'chat' AND message LIKE '%Hallo Allianz!%' ORDER BY id DESC LIMIT 1"
+)->fetch();
+check($chatLogRow !== false, 'Eine normale Allianz-Chat-Nachricht landet im Ereignis-Log (Kategorie chat)');
+
+// --- Test: Wortfilter blockiert verbotene Begriffe in Spielername/Allianzname/Chat ---
+echo "Test: Wortfilter blockiert verbotene Begriffe bei Registrierung, Allianzname und Chat\n";
+$bannedWord = 'verbotenesquatschwort' . random_int(1000, 9999); // zufaelliges, garantiert einzigartiges Testwort
+$pdo->prepare('INSERT INTO banned_words (word) VALUES (?)')->execute([$bannedWord]);
+
+$bannedUsernameAttempt = apiCall('POST', '/api/register', [
+    'deviceId' => 'test-badword-' . bin2hex(random_bytes(4)), 'username' => 'Der' . $bannedWord, 'universeId' => 1,
+]);
+check($bannedUsernameAttempt['status'] === 422, 'Registrierung mit verbotenem Begriff im Namen wird abgelehnt (422), Status: ' . $bannedUsernameAttempt['status']);
+
+$bannedAllianceAttempt = apiCall('POST', '/api/alliance/create', ['name' => 'Die ' . $bannedWord, 'tag' => 'BAD'], $c1['token']);
+check($bannedAllianceAttempt['status'] === 422, 'Allianzname mit verbotenem Begriff wird abgelehnt (422), Status: ' . $bannedAllianceAttempt['status']);
+
+$bannedChatAttempt = apiCall('POST', '/api/alliance/messages/send', ['body' => 'schau mal: ' . $bannedWord], $c1['token']);
+check($bannedChatAttempt['status'] === 422, 'Chat-Nachricht mit verbotenem Begriff wird abgelehnt (422), Status: ' . $bannedChatAttempt['status']);
+
+$moderationLogRow = $pdo->query(
+    "SELECT * FROM event_log WHERE category = 'moderation' AND message LIKE '%{$bannedWord}%' ORDER BY id DESC LIMIT 1"
+)->fetch();
+check($moderationLogRow !== false, 'Blockierter Versuch landet im Ereignis-Log (Kategorie moderation)');
+
+$pdo->prepare('DELETE FROM banned_words WHERE word = ?')->execute([$bannedWord]);
+
 // --- Test: gegenseitige Verteidigung - stationierte Flotte bei einem Verbündeten verteidigt mit ---
 echo "Test: Stationierung bei eigener Basis bleibt unverändert, bei Verbündeten verteidigt die Flotte mit\n";
 $d1 = registerPlayer($pdo, $createdDeviceIds, 'test-station-own'); // stationiert bei sich selbst

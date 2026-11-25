@@ -61,6 +61,7 @@ const AdminApp = (() => {
         loadUniverses();
         loadCatalog();
         loadEventLog();
+        loadBannedWords();
     }
 
     async function login() {
@@ -393,6 +394,8 @@ const AdminApp = (() => {
         alliance: 'Allianz',
         combat: 'Angriff/Plünderung',
         colonize: 'Kolonisierung',
+        chat: 'Allianz-Chat',
+        moderation: 'Wortfilter blockiert',
         error: 'Fehler',
     };
 
@@ -426,6 +429,24 @@ const AdminApp = (() => {
             </table>`;
     }
 
+    // --- Wortfilter ---------------------------------------------------------
+    async function loadBannedWords() {
+        try {
+            const res = await api('GET', '/admin/banned-words');
+            $('banned-words-textarea').value = res.words.join('\n');
+        } catch (e) { showToast(e.message); }
+    }
+
+    async function saveBannedWords() {
+        const words = $('banned-words-textarea').value.split('\n').map(w => w.trim()).filter(w => w !== '');
+        try {
+            const res = await api('POST', '/admin/banned-words', { words });
+            $('banned-words-textarea').value = res.words.join('\n');
+            $('banned-words-status').textContent = 'Gespeichert.';
+            setTimeout(() => { $('banned-words-status').textContent = ''; }, 2500);
+        } catch (e) { showToast(e.message); }
+    }
+
     function initTabs() {
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -446,6 +467,7 @@ const AdminApp = (() => {
         $('log-search-btn').addEventListener('click', loadEventLog);
         $('log-category-filter').addEventListener('change', loadEventLog);
         $('log-search').addEventListener('keydown', e => { if (e.key === 'Enter') loadEventLog(); });
+        $('banned-words-save-btn').addEventListener('click', saveBannedWords);
         initTabs();
 
         if (getToken()) showDashboard(); else showLogin();

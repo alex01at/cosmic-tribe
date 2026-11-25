@@ -25,6 +25,7 @@ require __DIR__ . '/../src/CombatResolver.php';
 require __DIR__ . '/../src/GameEngine.php';
 require __DIR__ . '/../src/GalaxyGenerator.php';
 require __DIR__ . '/../src/EventLog.php';
+require __DIR__ . '/../src/ProfanityFilter.php';
 
 $pdo = Database::connection();
 $config = require __DIR__ . '/../config/config.php';
@@ -154,7 +155,7 @@ $router->get('/api/alliance/messages', function () use ($pdo, $adminEngine, $req
 
 $router->post('/api/alliance/messages/send', function (array $body) use ($pdo, $adminEngine, $requirePlayerEngine) {
     [$player, $engine] = $requirePlayerEngine($pdo, $adminEngine);
-    Response::json($engine->postAllianceMessage((int) $player['id'], (string) ($body['body'] ?? '')));
+    Response::json($engine->postAllianceMessage((int) $player['id'], (int) $player['universe_id'], (string) ($body['body'] ?? '')));
 });
 
 // ============================================================
@@ -243,6 +244,16 @@ $router->get('/api/admin/log', function () use ($pdo, $adminEngine) {
     $query = isset($_GET['q']) && $_GET['q'] !== '' ? (string) $_GET['q'] : null;
     $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 100;
     Response::json($adminEngine->searchEventLog($category, $query, $limit));
+});
+
+$router->get('/api/admin/banned-words', function () use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    Response::json($adminEngine->listBannedWords());
+});
+
+$router->post('/api/admin/banned-words', function (array $body) use ($pdo, $adminEngine) {
+    AdminAuth::requireAdmin($pdo);
+    Response::json($adminEngine->setBannedWords((array) ($body['words'] ?? [])));
 });
 
 $router->post('/api/admin/bases/update', function (array $body) use ($pdo, $adminEngine) {

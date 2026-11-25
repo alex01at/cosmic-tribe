@@ -43,6 +43,7 @@ final class Auth
         if (!preg_match('/^[\p{L}\p{N} _-]+$/u', $username)) {
             Response::error('Name enthält ungültige Zeichen', 422);
         }
+        ProfanityFilter::assertClean($pdo, $username, 'Spielername bei Registrierung', $universeId);
 
         // Universum muss existieren und offen sein, UND die Spielerzahl wird gegen max_players
         // geprueft - beides in derselben Transaktion wie der Insert (FOR UPDATE auf die

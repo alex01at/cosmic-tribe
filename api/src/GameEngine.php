@@ -1831,6 +1831,7 @@ final class GameEngine
         if (!preg_match('/^[\p{L}\p{N} _-]+$/u', $name) || !preg_match('/^[\p{L}\p{N}_-]+$/u', $tag)) {
             Response::error('Name oder Tag enthält ungültige Zeichen', 422);
         }
+        ProfanityFilter::assertClean($this->pdo, $name . ' ' . $tag, 'Allianzname/Tag', $universeId);
 
         $this->pdo->beginTransaction();
         try {
@@ -2011,7 +2012,7 @@ final class GameEngine
 
     private const MAX_ALLIANCE_MESSAGE_LENGTH = 500;
 
-    public function postAllianceMessage(int $playerId, string $body): array
+    public function postAllianceMessage(int $playerId, int $universeId, string $body): array
     {
         $body = trim($body);
         if ($body === '' || mb_strlen($body) > self::MAX_ALLIANCE_MESSAGE_LENGTH) {
@@ -2023,8 +2024,12 @@ final class GameEngine
             Response::error('Du bist in keiner Allianz', 422);
         }
 
+        ProfanityFilter::assertClean($this->pdo, $body, 'Allianz-Chat', $universeId);
+
         $this->pdo->prepare('INSERT INTO alliance_messages (alliance_id, player_id, body) VALUES (?, ?, ?)')
             ->execute([$allianceId, $playerId, $body]);
+
+        EventLog::log($this->pdo, 'chat', "„{$this->playerUsername($playerId)}“ im Allianz-Chat: {$body}", $universeId);
 
         return $this->listAllianceMessages($playerId);
     }
